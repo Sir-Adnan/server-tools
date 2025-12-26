@@ -1,162 +1,240 @@
 #!/bin/bash
 
-# Color Definitions
+# ==================================================
+# VPN SERVER OPTIMIZER - V4 PRODUCTION (GOLD)
+# Optimized for: Xray, Marzban, Sing-box
+# Network Stack: BBR + fq (High Throughput)
+# ==================================================
+
+# -------- Colors --------
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-PURPLE='\033[0;35m'
-NC='\033[0m' # No Color
+BOLD='\033[1m'
+NC='\033[0m'
 
-# Root Check
-if [ "$EUID" -ne 0 ]; then
-  echo -e "${RED}Error: Please run as root (sudo -i).${NC}"
+# -------- Root Check --------
+if [[ $EUID -ne 0 ]]; then
+  echo -e "${RED}[!] Please run as root (sudo -i)${NC}"
   exit 1
 fi
 
-# Banner Function
-show_banner() {
-    clear
-    echo -e "${CYAN}##################################################${NC}"
-    echo -e "${CYAN}#${NC} ${YELLOW}    __  ____  __________  ___    _   ______  ${NC} ${CYAN}#${NC}"
-    echo -e "${CYAN}#${NC} ${YELLOW}   / / / / / /_  __/ __ \/   |  / | / / __ \ ${NC} ${CYAN}#${NC}"
-    echo -e "${CYAN}#${NC} ${YELLOW}  / / / / /   / / / /_/ / /| | /  |/ / / / / ${NC} ${CYAN}#${NC}"
-    echo -e "${CYAN}#${NC} ${YELLOW} / /_/ / /___/ / / _, _/ ___ |/ /|  / /_/ /  ${NC} ${CYAN}#${NC}"
-    echo -e "${CYAN}#${NC} ${YELLOW} \____/_____/_/ /_/ |_/_/  |_/_/ |_/\____/   ${NC} ${CYAN}#${NC}"
-    echo -e "${CYAN}#${NC} ${PURPLE}      PREMIUM VPN SERVER OPTIMIZER 2025       ${NC} ${CYAN}#${NC}"
-    echo -e "${CYAN}##################################################${NC}"
+# -------- System Info --------
+RAM_MB=$(free -m | awk '/Mem:/ {print $2}')
+OS_NAME=$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')
+
+# -------- Progress --------
+progress() {
+    echo -ne " ${BLUE}[Processing]${NC} "
+    for i in {1..15}; do echo -ne "▓"; sleep 0.03; done
+    echo -e " ${GREEN}[OK]${NC}"
 }
 
-# 1. DNS Setup (Cloudflare + Google)
-setup_dns() {
-    echo -e "${BLUE}[*] Configuring Smart DNS (Cloudflare + Google)...${NC}"
-    INTERFACE=$(ip -o link show | awk -F': ' '$2 !~ /lo|docker|virbr/ {print $2; exit}')
-    
-    cat <<EOL > /etc/systemd/resolved.conf
-[Resolve]
-DNS=1.1.1.1 8.8.8.8
-FallbackDNS=1.0.0.1 8.8.4.4
-Domains=~.
-DNSStubListener=yes
-EOL
+# =========================
+# 1. SYSCTL OPTIMIZATION
+# =========================
+setup_sysctl() {
+    echo -e "${YELLOW}➤ Applying Kernel & Network Optimization...${NC}"
 
-    systemctl restart systemd-resolved
-    resolvectl dns "$INTERFACE" 1.1.1.1 8.8.8.8
-    resolvectl domain "$INTERFACE" "~."
-    ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-    echo -e "${GREEN}OK: DNS configured successfully.${NC}"
-}
+    if [[ $RAM_MB -le 2048 ]]; then
+        CONNTRACK=131072
+    elif [[ $RAM_MB -le 4096 ]]; then
+        CONNTRACK=262144
+    else
+        CONNTRACK=524288
+    fi
 
-# 2. Ultra Network & BBR Tuning
-setup_network() {
-    echo -e "${BLUE}[*] Applying Ultra Kernel Tuning for 1000+ Users...${NC}"
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak
-    
-    cat <<EOL > /etc/sysctl.conf
-# BBR Activation
+cat > /etc/sysctl.d/99-vpn-production.conf <<EOF
+# Queue & Congestion
 net.core.default_qdisc = fq
 net.ipv4.tcp_congestion_control = bbr
 
-# High-Load Network Parameters
+# Core Network
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
 net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.tcp_slow_start_after_idle = 0
+
+# TCP Behavior
 net.ipv4.tcp_fastopen = 3
-
-# Connection Tracking for VPN
-net.netfilter.nf_conntrack_max = 2000000
-net.nf_conntrack_max = 2000000
-
-# Huge Buffers for Smooth Traffic
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
-net.ipv4.tcp_rmem = 4096 87380 33554432
-net.ipv4.tcp_wmem = 4096 65536 33554432
-
-# Stability Settings
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_mtu_probing = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_fin_timeout = 20
+net.ipv4.tcp_retries2 = 8
+
+# Keepalive (Xray/V2Ray)
+net.ipv4.tcp_keepalive_time = 600
+net.ipv4.tcp_keepalive_intvl = 60
+net.ipv4.tcp_keepalive_probes = 5
+
+# Buffers (1Gbps)
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_rmem = 4096 87380 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+
+# Conntrack & System
+net.netfilter.nf_conntrack_max = $CONNTRACK
+net.ipv4.ip_forward = 1
 vm.swappiness = 10
-EOL
-    sysctl -p
-    echo -e "${GREEN}OK: Kernel optimized for high traffic.${NC}"
+fs.file-max = 1000000
+EOF
+
+    sysctl --system > /dev/null 2>&1
+    progress
 }
 
-# 3. Swap Creation
-setup_swap() {
-    if [ $(swapon --show | wc -l) -eq 0 ]; then
-        echo -e "${BLUE}[*] Creating 2GB Swap file for stability...${NC}"
-        fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
-        chmod 600 /swapfile
-        mkswap /swapfile
-        swapon /swapfile
-        echo '/swapfile none swap sw 0 0' >> /etc/fstab
-        echo -e "${GREEN}OK: 2GB Swap activated.${NC}"
-    else
-        echo -e "${YELLOW}INFO: Swap already exists. Skipping...${NC}"
+# =========================
+# 2. DNS CONFIG
+# =========================
+setup_dns() {
+    echo -e "${YELLOW}➤ Configuring DNS...${NC}"
+
+cat > /etc/systemd/resolved.conf <<EOF
+[Resolve]
+DNS=1.1.1.1 8.8.8.8
+FallbackDNS=1.0.0.1 8.8.4.4
+DNSStubListener=no
+EOF
+
+    # Fix: Unlock resolv.conf if provider locked it
+    if command -v chattr &> /dev/null; then
+        chattr -i /etc/resolv.conf > /dev/null 2>&1
     fi
+
+    systemctl restart systemd-resolved
+    ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+    progress
 }
 
-# 4. Cleanup & File Limits
-cleanup_and_limits() {
-    echo -e "${BLUE}[*] Cleaning logs and increasing file limits...${NC}"
-    # File Limits
-    cat <<EOL > /etc/security/limits.conf
-* soft nofile 1000000
-* hard nofile 1000000
-root soft nofile 1000000
-root hard nofile 1000000
-EOL
-    # Journal Cleanup
-    journalctl --vacuum-size=50M
-    apt-get autoremove -y > /dev/null
-    echo -e "${GREEN}OK: System cleaned.${NC}"
+# =========================
+# 3. LIMITS
+# =========================
+setup_limits() {
+    echo -e "${YELLOW}➤ Increasing File Limits...${NC}"
+
+cat > /etc/security/limits.d/99-vpn.conf <<EOF
+* soft nofile 262144
+* hard nofile 262144
+root soft nofile 262144
+root hard nofile 262144
+EOF
+
+    sed -i '/DefaultLimitNOFILE/d' /etc/systemd/system.conf
+    echo "DefaultLimitNOFILE=262144" >> /etc/systemd/system.conf
+    systemctl daemon-reexec > /dev/null 2>&1
+    progress
 }
 
-# Main Logic
+# =========================
+# 4. SWAP MANAGER
+# =========================
+setup_swap() {
+    if swapon --show | grep -q swap; then
+        echo -e "${GREEN}   Swap already exists. Skipped.${NC}"
+        return
+    fi
+
+    if [[ $RAM_MB -le 2048 ]]; then
+        SWAP_SIZE=2G
+    elif [[ $RAM_MB -le 4096 ]]; then
+        SWAP_SIZE=4G
+    else
+        echo -e "${GREEN}   High RAM detected. Swap skipped.${NC}"
+        return
+    fi
+
+    echo -e "${YELLOW}➤ Creating Swap ($SWAP_SIZE)...${NC}"
+    fallocate -l $SWAP_SIZE /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$(( ${SWAP_SIZE%G} * 1024 ))
+    chmod 600 /swapfile
+    mkswap /swapfile > /dev/null
+    swapon /swapfile
+    echo "/swapfile none swap sw 0 0" >> /etc/fstab
+    progress
+}
+
+# =========================
+# 5. EXTRAS
+# =========================
+setup_extra() {
+    echo -e "${YELLOW}➤ Syncing Time & Optimizing SSH...${NC}"
+    timedatectl set-ntp true
+
+    if [ -f /etc/ssh/sshd_config ]; then
+        # Backup before edit
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+        sed -i 's/#UseDNS yes/UseDNS no/' /etc/ssh/sshd_config
+        sed -i 's/UseDNS yes/UseDNS no/' /etc/ssh/sshd_config
+        systemctl restart ssh
+    fi
+    progress
+}
+
+cleanup() {
+    echo -e "${YELLOW}➤ Cleaning System...${NC}"
+    journalctl --vacuum-size=50M > /dev/null 2>&1
+    apt-get autoremove -y > /dev/null 2>&1
+    progress
+}
+
+# =========================
+# MAIN MENU (PRO UI)
+# =========================
 while true; do
-    show_banner
-    echo -e "${CYAN}Available Options:${NC}"
-    echo -e "${GREEN}1)${NC} Full Optimization ${YELLOW}(Highly Recommended)${NC}"
-    echo -e "${GREEN}2)${NC} Clean Logs & Free Space"
-    echo -e "${GREEN}3)${NC} Show Current Status"
-    echo -e "${RED}E)${NC} Exit"
-    echo -e "${CYAN}--------------------------------------------------${NC}"
-    read -p "Select an option: " choice
+    clear
+    echo -e "${CYAN}"
+    echo " ██╗   ██╗██████╗ ███╗   ██╗"
+    echo " ██║   ██║██╔══██╗████╗  ██║"
+    echo " ██║   ██║██████╔╝██╔██╗ ██║"
+    echo " ╚██╗ ██╔╝██╔═══╝ ██║╚██╗██║"
+    echo "  ╚████╔╝ ██║     ██║ ╚████║"
+    echo "   ╚═══╝  ╚═╝     ╚═╝  ╚═══╝"
+    echo -e "${NC}"
 
-    case $choice in
+    echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V4 PRODUCTION${NC}"
+    echo -e "${YELLOW}   Xray • Marzban • Sing-box${NC}"
+    echo
+    echo -e "${BLUE}────────────────────────────────────────${NC}"
+    echo -e "${CYAN} OS:${NC} $OS_NAME     ${CYAN}RAM:${NC} ${RAM_MB} MB"
+    echo -e "${BLUE}────────────────────────────────────────${NC}"
+    echo
+
+    echo -e " ${GREEN}[1]${NC} 🚀 Start Full Optimization"
+    echo -e " ${CYAN}[2]${NC} 📊 System Status"
+    echo -e " ${CYAN}[3]${NC} 🔄 Reboot Server"
+    echo
+    echo -e " ${RED}[0]${NC} ❌ Exit"
+    echo
+    read -p " ➤ Select option: " opt
+
+    case $opt in
         1)
             setup_dns
-            setup_network
+            setup_sysctl
+            setup_limits
             setup_swap
-            cleanup_and_limits
-            echo -e "\n${GREEN}ALL PROCESSES COMPLETED!${NC}"
-            echo -e "${YELLOW}Please reboot your server: ${NC}reboot"
-            exit 0
-            ;;
-        2)
-            cleanup_and_limits
-            read -p "Done. Press Enter to return..."
-            ;;
-        3)
-            show_banner
-            echo -e "${BLUE}--- System Status ---${NC}"
-            echo -e "${CYAN}TCP BBR:${NC} $(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}')"
-            echo -e "${CYAN}Active DNS:${NC} $(resolvectl status | grep 'Current DNS Server' | head -n 1 | awk '{print $4}')"
-            echo -e "${CYAN}Swap Usage:${NC} $(free -h | grep Swap | awk '{print $3 "/" $2}')"
-            echo -e "${CYAN}TCP Connections:${NC} $(ss -ant | wc -l)"
+            setup_extra
+            cleanup
+            echo -e "\n${GREEN}✔ Optimization Completed Successfully${NC}"
+            echo -e "${YELLOW}⚠ Reboot required for changes to take effect.${NC}"
             read -p "Press Enter to return..."
             ;;
-        E|e)
-            echo -e "${GREEN}Good luck! Goodbye.${NC}"
-            exit 0
+        2)
+            clear
+            echo -e "${CYAN}--- System Status ---${NC}"
+            echo "Queue Algo:   $(sysctl net.core.default_qdisc | awk '{print $3}')"
+            echo "Congestion:   $(sysctl net.ipv4.tcp_congestion_control | awk '{print $3}')"
+            echo "Open Files:   $(ulimit -n)"
+            echo "Swap Usage:   $(free -h | awk '/Swap/ {print $3 " / " $2}')"
+            echo "Time Sync:    $(timedatectl | grep 'synchronized' | awk '{print $4}')"
+            echo
+            read -p "Press Enter to return..."
             ;;
-        *)
-            echo -e "${RED}Invalid option!${NC}"
-            sleep 1
-            ;;
+        3) reboot ;;
+        0) exit ;;
+        *) echo "Invalid option"; sleep 1 ;;
     esac
 done
