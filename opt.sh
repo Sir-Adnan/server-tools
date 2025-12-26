@@ -195,6 +195,7 @@ while true; do
     echo -e "${NC}"
 
     echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V4 PRODUCTION${NC}"
+        echo -e "${BOLD}${RED}   Creator Telegram : @UnknownZero${NC}"
     echo -e "${YELLOW}   Xray • Marzban • Sing-box${NC}"
     echo
     echo -e "${BLUE}────────────────────────────────────────${NC}"
