@@ -299,7 +299,7 @@ cleanup() {
 }
 
 # =========================
-# MAIN MENU
+# MAIN MENU (FIXED VERSION)
 # =========================
 while true; do
     clear
@@ -312,10 +312,9 @@ while true; do
     echo "   ╚═══╝  ╚═╝     ╚═╝  ╚═══╝"
     echo -e "${NC}"
     echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V11 INFRA${NC}"
-    echo -e "${YELLOW}   Multi-IF Netplan • % Based Swap • Log Age${NC}
+    echo -e "${YELLOW}   Multi-IF Netplan • % Based Swap • Log Age${NC}"
     echo -e "${YELLOW}   Idempotent • BBR Check • Anti-Leak${NC}"
     echo -e "${CYAN}   Creator Telegram ID : @UnknownZero${NC}"
-    echo -e "${CYAN}==============================================${NC}""
     echo -e "${CYAN}==============================================${NC}"
     echo -e " ${CYAN}OS:${NC} $OS_NAME | ${CYAN}Kernel:${NC} $KERNEL_BASE"
     echo -e " ${CYAN}RAM:${NC} ${RAM_MB}MB | ${CYAN}Interfaces:${NC} $(echo $PHY_INTERFACES | tr '\n' ' ')"
@@ -354,6 +353,6 @@ while true; do
             ;;
         3) reboot ;;
         0) exit ;;
-        *) echo "Invalid"; sleep 1 ;;
+        *) echo "Invalid option"; sleep 1 ;;
     esac
 done
