@@ -1,96 +1,120 @@
-# 🚀 VPN Server Optimizer (V4 Production - Gold Edition)
+# 🚀 بهینه‌ساز سرور VPN (نسخه V4 پروداکشن - Gold Edition)
 
 ![Bash](https://img.shields.io/badge/Language-Bash-4EAA25?style=for-the-badge&logo=gnu-bash)
 ![System](https://img.shields.io/badge/System-Linux-FCC624?style=for-the-badge&logo=linux)
 ![Network](https://img.shields.io/badge/Network-BBR%20%2B%20FQ-007EC6?style=for-the-badge&logo=cisco)
 ![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
+![Telegram](https://img.shields.io/badge/Support-Telegram-blue?style=for-the-badge&logo=telegram&link=https://t.me/UnknownZero)
 
 <div align="center">
 
-## 🇮🇷 [برای مشاهده توضیحات به زبان فارسی اینجا کلیک کنید](README_FA.md) 🇮🇷
-**[Click here for Persian (Farsi) Version](README_FA.md)**
+[English Version](README_en.md) 👈
 
 </div>
 
----
+## 📖 معرفی پروژه
+**VPN Server Optimizer V4** یک اسکریپت بش (Bash) در سطح Production است که به طور اختصاصی برای تیونینگ و بهینه‌سازی سرورهای لینوکسی جهت اجرای پروتکل‌های **Xray, Marzban, Sing-box و V2Ray** طراحی شده است.
 
-## 📖 Overview
-**VPN Server Optimizer V4** is a production-grade bash script designed to tune Linux servers specifically for high-performance VPN protocols like **Xray, Marzban, Sing-box, and V2Ray**.
-
-Unlike bloated scripts that break system stability, this "Gold Edition" focuses on **safe, reversible, and mathematically calculated** optimizations. It automatically detects hardware resources (RAM) to apply the most efficient configurations for TCP buffers, connection limits, and swap management.
+برخلاف اسکریپت‌های شلوغ و قدیمی که پایداری سیستم را با تغییرات غیرضروری به خطر می‌اندازند، این "نسخه طلایی" بر روی بهینه‌سازی‌های **امن، مهندسی‌شده و بازگشت‌پذیر** تمرکز دارد. این ابزار به صورت هوشمند میزان RAM سرور شما را تشخیص داده و دقیق‌ترین تنظیمات را برای بافرهای TCP و مدیریت Swap اعمال می‌کند.
 
 ---
 
-## ✨ Key Features
+## ✨ ویژگی‌های کلیدی
 
-| Feature | Description |
+| ویژگی | توضیحات |
 | :--- | :--- |
-| 🚀 **Kernel Tuning** | Enables **BBR + FQ** congestion control for maximum throughput and lower latency. |
-| 🛡️ **Network Stack** | Optimizes `sysctl` for high concurrency (100k+ connections). |
-| ⚡ **Smart Swap** | Auto-detects RAM. Creates Swap only if needed (2G/4G) to prevent OOM kills. |
-| 🔓 **Limit Unlock** | Increases `ulimit` open files to **262,144** for systemd and root. |
-| 🌐 **DNS Optimization** | Sets Cloudflare & Google DNS via `systemd-resolved` for faster resolving. |
-| ⏱️ **Connection Stability** | Tunes `tcp_keepalive` specifically for Xray/V2ray to fix "Connection Closed" errors. |
-| 🧹 **Auto Maintenance** | Includes log vacuuming, time syncing (NTP), and package cleanup. |
+| 🚀 **تیونینگ کرنل** | فعال‌سازی الگوریتم کنترل ازدحام **BBR + FQ** برای حداکثر پهنای باند و کاهش پینگ. |
+| 🛡️ **پشته شبکه (Network Stack)** | بهینه‌سازی `sysctl` برای مدیریت هم‌زمان هزاران کانکشن (Concurrency بالا). |
+| ⚡ **مدیریت هوشمند Swap** | تشخیص خودکار رم؛ ساخت Swap (2 یا 4 گیگ) فقط در صورت نیاز برای جلوگیری از کرش کردن. |
+| 🔓 **رفع محدودیت‌ها** | افزایش لیمیت فایل‌های باز (`ulimit`) به **262,144** برای سیستم و سرویس‌ها. |
+| 🌐 **بهینه‌سازی DNS** | تنظیم DNSهای کلودفلر و گوگل روی `systemd-resolved` برای افزایش سرعت Resolve. |
+| ⏱️ **پایداری اتصال** | تنظیم دقیق `tcp_keepalive` برای جلوگیری از خطای "Connection Closed" در کلاینت‌های V2ray. |
+| 🧹 **نگهداری خودکار** | شامل همگام‌سازی زمان (NTP)، حذف لاگ‌های حجیم و پاکسازی پکیج‌های اضافی. |
 
 ---
 
-## 📥 Installation
+## 📥 روش نصب
 
-Run the following command as **root** on your server:
+دستور زیر را با دسترسی **root** در ترمینال سرور اجرا کنید:
 
 ```bash
 wget -qO opt.sh https://raw.githubusercontent.com/Sir-Adnan/server-tools/refs/heads/main/opt.sh && chmod +x opt.sh && ./opt.sh
 ```
-⚙️ Optimization Details
-Here is what happens under the hood when you run the script:
 
-1. TCP & BBR Optimization
-Congestion Control: Forces bbr with fq queuing discipline.
+---
 
-TCP Fast Open: Enabled (3) to reduce handshake latency.
+## ⚙️ جزئیات فنی و عملکرد
 
-Buffers: Increases rmem and wmem max to ~33MB (optimized for 1Gbps+ uplinks).
+هنگامی که اسکریپت را اجرا می‌کنید، تغییرات زیر در سطح هسته اعمال می‌شود:
 
-2. Xray/V2Ray Specific Tuning
-Standard Linux timeouts cause ghost connections in VPNs. We adjust the following parameters to prevent client disconnections during idle times:
+### ۱. بهینه‌سازی TCP و BBR
 
-Properties
+* **کنترل ازدحام:** کرنل مجبور به استفاده از `bbr` همراه با صف `fq` می‌شود.
+* **TCP Fast Open:** فعال‌سازی (مقدار ۳) برای کاهش تاخیر در برقراری ارتباط اولیه (Handshake).
+* **بافرها:** افزایش `rmem` و `wmem` به حدود ۳۳ مگابایت (مناسب برای پورت‌های 1Gbps).
 
+### ۲. تنظیمات اختصاصی Xray/V2Ray
+
+تایم‌اوت‌های پیش‌فرض لینوکس باعث قطع شدن اتصال کاربران در VPN می‌شود. ما این مقادیر را تغییر می‌دهیم:
+
+```properties
 net.ipv4.tcp_keepalive_time = 600   # 10 minutes
 net.ipv4.tcp_keepalive_intvl = 60
 net.ipv4.tcp_keepalive_probes = 5
-3. Smart Swap Manager
-The script automatically detects your RAM usage and acts accordingly:
 
-RAM ≤ 2GB: Creates 2GB Swap file.
+```
 
-RAM ≤ 4GB: Creates 4GB Swap file.
+*نتیجه:* اتصال کاربران در زمان‌های بیکاری (Idle) قطع نمی‌شود.
 
-RAM > 4GB: Skips Swap creation (Preserves NVMe/SSD life).
+### ۳. مدیریت هوشمند Swap
 
-4. File Descriptors (Limits)
-Default Linux limits (1024) are too low for high-load VPN servers.
+اسکریپت میزان رم شما را بررسی می‌کند:
 
-Hard/Soft Limit: Raised to 262144.
+* **رم ≤ ۲ گیگ:** ساخت ۲ گیگابایت Swap.
+* **رم ≤ ۴ گیگ:** ساخت ۴ گیگابایت Swap.
+* **رم > ۴ گیگ:** عدم ساخت Swap (جهت حفظ عمر هارد NVMe/SSD و کارایی بالا).
 
-Systemd Global: Applied to all services via /etc/systemd/system.conf.
+### ۴. محدودیت فایل‌ها (File Descriptors)
 
-🖥️ Menu Interface
-The script features a user-friendly interactive menu:
+لیمیت پیش‌فرض لینوکس (۱۰۲۴) برای سرورهای VPN بسیار کم است.
 
-🚀 Start Full Optimization: Applies all tweaks automatically.
+* **Hard/Soft Limit:** افزایش به `262144`.
+* **Systemd Global:** اعمال تغییرات روی تمام سرویس‌ها از طریق `/etc/systemd/system.conf`.
 
-📊 System Status: Shows current Congestion Control, Queue Algo, Swap, and Ulimits.
+---
 
-🔄 Reboot Server: Quick reboot to apply kernel changes.
+## 🖥️ منوی کاربری
 
-⚠️ Requirements
-OS: Ubuntu 20.04+, Debian 10+ (Recommended).
+اسکریپت دارای یک رابط کاربری ساده و تعاملی است:
 
-Root Access: Must be run as root (sudo -i).
+1. **🚀 Start Full Optimization:** شروع عملیات بهینه‌سازی کامل (صفر تا صد).
+2. **📊 System Status:** نمایش وضعیت فعلی الگوریتم شبکه، سواپ و لیمیت‌ها.
+3. **🔄 Reboot Server:** ریبوت سریع برای اعمال تغییرات کرنل.
 
-Virtualization: KVM / Xen / VMware (OpenVZ may not support BBR).
+---
 
-📜 Disclaimer
-This script modifies system configurations (sysctl, limits, fstab). While tested on production servers, always ensure you have backups before running system-level scripts.
+## ⚠️ پیش‌نیازها
+
+* **سیستم عامل:** اوبونتو ۲۰.۰۴+ یا دبیان ۱۰+ (پیشنهادی).
+* **دسترسی:** حتماً باید با کاربر `root` اجرا شود (`sudo -i`).
+* **مجازی‌ساز:** KVM / VMware / Xen (مجازی‌سازهای OpenVZ ممکن است از BBR پشتیبانی نکنند).
+
+---
+
+## 📞 ارتباط و پشتیبانی
+
+اگر سوالی دارید یا باگی پیدا کردید، می‌توانید از طریق تلگرام با سازنده در ارتباط باشید:
+
+<a href="https://t.me/UnknownZero">🐦‍🔥 Telegram: @UnknownZero</a>
+
+---
+
+## 📜 سلب مسئولیت
+
+این اسکریپت تنظیمات سیستمی (`sysctl`, `limits`, `fstab`) را تغییر می‌دهد. اگرچه روی سرورهای عملیاتی تست شده است، پیشنهاد می‌شود قبل از اجرا روی سرورهای حساس، بکاپ داشته باشید.
+
+<div align="center">
+
+**اگر این اسکریپت برای شما مفید بود، لطفاً به پروژه ⭐️ (Star) دهید!**
+
+</div>
