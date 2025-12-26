@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# VPN SERVER OPTIMIZER - V11 (INFRASTRUCTURE EDITION) For GCore Datacenter
+# VPN SERVER OPTIMIZER - V11 (INFRASTRUCTURE EDITION) For Gcore, Oracle Cloud, AWS Datacenters
 # ویژگی‌ها: سواپ داینامیک، بهینه‌سازی هسته، مدیریت لاگ و DNS ایمن
 # متناسب با دیتاسنترهای حساس (Gcore, Hetzner, Oracle)
 # ==================================================
@@ -248,7 +248,7 @@ while true; do
     echo "  ╚████╔╝ ██║     ██║ ╚████║"
     echo "   ╚═══╝  ╚═╝     ╚═╝  ╚═══╝"
     echo -e "${NC}"
-    echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V11 INFRA For GCore Datacenter${NC}"
+    echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V11 INFRA For Gcore, Oracle Cloud, AWS Datacenters${NC}"
     echo -e "${YELLOW}   Multi-IF Netplan • % Based Swap • Log Age${NC}"
     echo -e "${YELLOW}   Idempotent • Cloud-Safe • Anti-Leak${NC}"
     echo -e "${CYAN}   Creator Telegram ID : @UnknownZero${NC}"
