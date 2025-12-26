@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # ==================================================
-# VPN SERVER OPTIMIZER - V4 PRODUCTION (GOLD)
+# VPN SERVER OPTIMIZER - V4.5 PRODUCTION (FIXED)
 # Optimized for: Xray, Marzban, Sing-box
-# Network Stack: BBR + fq (High Throughput)
+# Fix: Forces Global DNS Priority (Prevents Leak)
 # ==================================================
 
 # -------- Colors --------
@@ -88,15 +88,18 @@ EOF
 }
 
 # =========================
-# 2. DNS CONFIG
+# 2. DNS CONFIG (FIXED)
 # =========================
 setup_dns() {
-    echo -e "${YELLOW}➤ Configuring DNS...${NC}"
+    echo -e "${YELLOW}➤ Configuring DNS (Forcing Global Priority)...${NC}"
 
+    # CRITICAL FIX: 'Domains=~.' forces systemd to use these DNS servers 
+    # for ALL traffic, overriding the Interface/DHCP DNS.
 cat > /etc/systemd/resolved.conf <<EOF
 [Resolve]
 DNS=1.1.1.1 8.8.8.8
 FallbackDNS=1.0.0.1 8.8.4.4
+Domains=~.
 DNSStubListener=no
 EOF
 
@@ -106,6 +109,8 @@ EOF
     fi
 
     systemctl restart systemd-resolved
+    
+    # Force symlink to uplink file (Not stub) to bypass local caching issues
     ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
     progress
 }
@@ -194,7 +199,7 @@ while true; do
     echo "   ╚═══╝  ╚═╝     ╚═╝  ╚═══╝"
     echo -e "${NC}"
 
-    echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V4 PRODUCTION${NC}"
+    echo -e "${BOLD}${GREEN}   VPN SERVER OPTIMIZER — V4.5 PRODUCTION${NC}"
     echo -e "${YELLOW}   Xray • Marzban • Sing-box${NC}"
     echo -e "${CYAN}   Creator Telegram ID : @UnknownZero${NC}"
     echo
