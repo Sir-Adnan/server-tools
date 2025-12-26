@@ -33,4 +33,4 @@
 دستور زیر را با دسترسی **root** در ترمینال سرور اجرا کنید:
 
 ```bash
-bash <(curl -Ls [https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/opt.sh](https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/opt.sh))
+wget -qO opt.sh https://raw.githubusercontent.com/Sir-Adnan/server-tools/refs/heads/main/opt.sh && chmod +x opt.sh && ./opt.sh
