@@ -1,17 +1,13 @@
 #!/usr/bin/env bash
 # ============================================================
-# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V15.0.0-SAFE)
+# VPN SERVER OPTIMIZER — UI POLISHED SAFE BUILD (V15.1.0-UI)
 # Target: Xray / VLESS TCP Reality (stable, low-latency)
-# UI: ASCII-only (no unicode/emoji/box-drawing) for clean terminals
 #
-# What this SAFE build does NOT do (on purpose):
+# SAFE by design:
 # - DOES NOT touch MTU (no probing, no netplan MTU persist)
 # - DOES NOT tune NIC ring buffers (ethtool ring often harms VPS latency)
-# - DOES NOT enable tcp_mtu_probing (prevents runaway MTU shrink on lossy paths)
-# - DOES NOT route all DNS via Domains=~. (no “global DNS hijack” behavior)
-#
-# Creator : UnknownZero
-# Telegram ID : @UnknownZero
+# - DISABLES tcp_mtu_probing (prevents runaway MTU shrink on lossy paths)
+# - DOES NOT route all DNS via Domains=~. (no global DNS hijack)
 # ============================================================
 
 set -Eeuo pipefail
@@ -21,7 +17,7 @@ IFS=$'\n\t'
 # CONFIG
 # =========================
 SCRIPT_NAME="vpn_optimizer"
-VERSION="V15.0.0-SAFE"
+VERSION="V15.1.0-UI"
 
 BACKUP_ROOT="/root/vpn_optimizer_backups"
 RUN_ID="$(date +%F_%H-%M-%S)"
@@ -53,23 +49,27 @@ if ! ( touch "$LOG_FILE" 2>/dev/null ); then
 fi
 
 # =========================
-# COLORS (no bright cyan)
+# COLORS (tasteful)
 # =========================
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;34m'
-MAGENTA='\033[0;35m'
-GRAY='\033[0;90m'
+RESET='\033[0m'
 BOLD='\033[1m'
 DIM='\033[2m'
-NC='\033[0m'
+
+# Modern-ish palette
+FG_RED='\033[38;5;203m'
+FG_GREEN='\033[38;5;82m'
+FG_YELLOW='\033[38;5;220m'
+FG_BLUE='\033[38;5;75m'
+FG_MAGENTA='\033[38;5;141m'
+FG_CYAN='\033[38;5;51m'
+FG_GRAY='\033[38;5;245m'
+FG_WHITE='\033[38;5;255m'
 
 # =========================
 # ROOT CHECK
 # =========================
 if [[ ${EUID:-9999} -ne 0 ]]; then
-  echo -e "${RED}This script must be run as root.${NC}"
+  echo -e "${FG_RED}${BOLD}This script must be run as root.${RESET}"
   exit 1
 fi
 
@@ -143,27 +143,13 @@ restore_from_latest_or_remove() {
 # =========================
 # UI HELPERS
 # =========================
-hr()  { echo -e "${GRAY}------------------------------------------------${NC}"; }
-hr2() { echo -e "${GRAY}================================================${NC}"; }
-
-kv() {
-  local k="$1" v="$2"
-  printf "%b%-12s%b %b%s%b\n" "$DIM" "$k:" "$NC" "$BOLD" "$v" "$NC"
-}
-
-title_box() {
-  local text="$1"
-  hr
-  echo -e "${BOLD}${GREEN}${text}${NC}"
-  hr
-}
-
-pause() {
-  if [[ -t 0 ]]; then
-    read -rp "$(echo -e "${GRAY}Press Enter...${NC}")"
-  else
-    sleep 1
-  fi
+term_width() {
+  local c
+  c="$(tput cols 2>/dev/null || echo 90)"
+  # clamp
+  (( c < 70 )) && c=70
+  (( c > 110 )) && c=110
+  echo "$c"
 }
 
 repeat_char() {
@@ -176,28 +162,97 @@ repeat_char() {
   printf "%s" "$out"
 }
 
+hr() {
+  local w; w="$(term_width)"
+  echo -e "${FG_GRAY}$(repeat_char "-" "$w")${RESET}"
+}
+
+hr2() {
+  local w; w="$(term_width)"
+  echo -e "${FG_GRAY}$(repeat_char "=" "$w")${RESET}"
+}
+
+center() {
+  local text="$1"
+  local w; w="$(term_width)"
+  local len=${#text}
+  if (( len >= w )); then
+    echo "$text"
+    return
+  fi
+  local pad=$(( (w - len) / 2 ))
+  printf "%*s%s\n" "$pad" "" "$text"
+}
+
+title_box() {
+  local text="$1"
+  hr
+  echo -e "${BOLD}${FG_CYAN}$(center "$text")${RESET}"
+  hr
+}
+
+section() {
+  local text="$1"
+  echo -e "${BOLD}${FG_BLUE}[$text]${RESET}"
+}
+
+kv() {
+  local k="$1" v="$2"
+  printf "%b%-18s%b %b%s%b\n" "$DIM$FG_GRAY" "$k:" "$RESET" "$BOLD$FG_WHITE" "$v" "$RESET"
+}
+
+ok()   { echo -e "${FG_GREEN}${BOLD}OK${RESET}"; }
+warn() { echo -e "${FG_YELLOW}${BOLD}WARN${RESET}"; }
+fail() { echo -e "${FG_RED}${BOLD}FAIL${RESET}"; }
+
+pause() {
+  if [[ -t 0 ]]; then
+    read -rp "$(echo -e "${FG_GRAY}Press Enter...${RESET}")"
+  else
+    sleep 1
+  fi
+}
+
 progress_bar() {
   local pct="$1"
   local title="${2:-}"
-  local width=32
+  local width=28
   local filled=$(( pct * width / 100 ))
   local empty=$(( width - filled ))
   local bar
   bar="$(repeat_char "#" "$filled")$(repeat_char "." "$empty")"
-  printf "\r%b[%s] %3s%%%b %s" "$BLUE" "$bar" "$pct" "$NC" "$title"
+  printf "\r%b[%s] %3s%%%b %s" "$FG_MAGENTA" "$bar" "$pct" "$RESET" "$title"
 }
 
 run_step() {
   local idx="$1" total="$2" title="$3" fn="$4"
   local pct=$(( idx * 100 / total ))
   progress_bar "$pct" "$title"
-  echo -ne "\n${DIM}${title}${NC} ... "
+  echo -ne "\n${DIM}${FG_GRAY}${title}${RESET} ... "
   if "$fn"; then
-    echo -e "${GREEN}OK${NC}"
+    ok
   else
-    echo -e "${RED}FAIL${NC}"
+    fail
     return 1
   fi
+}
+
+print_logo() {
+  clear
+  local w; w="$(term_width)"
+  echo -e "${FG_MAGENTA}${BOLD}"
+  cat <<'EOF'
+ __      __  _____  _   _
+ \ \    / / |  __ \| \ | |
+  \ \  / /  | |__) |  \| |
+   \ \/ /   |  ___/| . ` |
+    \  /    | |    | |\  |
+     \/     |_|    |_| \_|
+EOF
+  echo -e "${RESET}"
+  echo -e "${BOLD}${FG_CYAN}$(center "Optimizer For VPN Servers By @UnknownZero")${RESET}"
+  echo -e "${DIM}${FG_GRAY}$(center "SAFE build for VLESS TCP Reality | UI polished")${RESET}"
+  hr2
 }
 
 # =========================
@@ -223,7 +278,6 @@ get_default_gw_ipv4() {
 }
 
 ver_ge() {
-  # returns 0 if $1 >= $2 (semver-ish: major.minor.patch)
   local a="$1" b="$2"
   awk -v A="$a" -v B="$b" '
     function splitv(v, arr,   n,i){ n=split(v,arr,"."); for(i=n+1;i<=3;i++) arr[i]=0 }
@@ -266,15 +320,17 @@ detect_dns_stack() {
 }
 
 # =========================
-# SYSTEM INFO (computed once)
+# SYSTEM INFO (base)
 # =========================
-RAM_MB="$(free -m 2>/dev/null | awk '/Mem:/ {print $2}' || echo 0)"
 OS_NAME="$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "Unknown")"
 KERNEL_FULL="$(uname -r 2>/dev/null || echo "Unknown")"
 KERNEL_BASE="${KERNEL_FULL%%-*}"
 PHY_INTERFACES="$(ls /sys/class/net 2>/dev/null | grep -Ev 'lo|docker|veth|tun|wg|br-|cali' || true)"
 DEFAULT_IFACE="$(get_default_iface || true)"
 DEFAULT_GW="$(get_default_gw_ipv4 || true)"
+
+# refreshable RAM MB (do not freeze)
+get_ram_mb() { free -m 2>/dev/null | awk '/Mem:/ {print $2}' || echo 0; }
 
 if [[ "${APPLY_DNS_TO_ALL_INTERFACES}" -eq 1 ]]; then
   TARGET_INTERFACES="$PHY_INTERFACES"
@@ -287,30 +343,87 @@ else
 fi
 
 # =========================
-# BANNER / SUMMARY
+# NETWORK / IP HELPERS
 # =========================
-print_banner() {
-  echo -e "${MAGENTA}${BOLD}"
-  cat <<'EOF'
- _    _  ____  _   _
-| |  | |/ __ \| \ | |
-| |  | | |  | |  \| |
-| |  | | |  | | . ` |
-| |__| | |__| | |\  |
- \____/ \____/|_| \_|
-EOF
-  echo -e "${NC}"
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+curl_quick() {
+  # curl_quick <ipver> <url>
+  local ipver="$1" url="$2"
+  if ! has_cmd curl; then return 1; fi
+  if [[ "$ipver" == "4" ]]; then
+    curl -4 -fsS --max-time 2 "$url" 2>/dev/null | tr -d ' \n\r'
+  else
+    curl -6 -fsS --max-time 2 "$url" 2>/dev/null | tr -d ' \n\r'
+  fi
 }
 
-summary_line() {
-  local cc qdisc
-  cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
-  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
-  echo -e "${GRAY}cc=${cc}  qdisc=${qdisc}  DNS=${DNS1}/${DNS2}  IF=${DEFAULT_IFACE:-?}${NC}"
+get_public_ip4() {
+  local ip=""
+  ip="$(curl_quick 4 "https://api.ipify.org" || true)"
+  [[ -n "$ip" ]] || ip="$(curl_quick 4 "https://ifconfig.co/ip" || true)"
+  [[ -n "$ip" ]] || ip="$(curl_quick 4 "https://ip.sb" || true)"
+  if is_valid_ipv4 "$ip"; then
+    echo "$ip"
+    return 0
+  fi
+  # fallback to first global ipv4 on interface
+  ip="$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1 || true)"
+  echo "${ip:-N/A}"
+}
+
+get_public_ip6() {
+  local ip=""
+  ip="$(curl_quick 6 "https://api64.ipify.org" || true)"
+  [[ -n "$ip" ]] || ip="$(curl_quick 6 "https://ifconfig.co/ip" || true)"
+  [[ -n "$ip" ]] || ip="$(curl_quick 6 "https://ip.sb" || true)"
+  # basic sanity: must contain :
+  if [[ "$ip" == *:* ]]; then
+    echo "$ip"
+    return 0
+  fi
+  ip="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1 | head -n1 || true)"
+  echo "${ip:-N/A}"
+}
+
+# CPU usage via /proc/stat (more portable than parsing top)
+cpu_usage_pct() {
+  local a b idle_a idle_b total_a total_b
+  read -r _ a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 < /proc/stat
+  idle_a=$((a4 + a5))
+  total_a=$((a1+a2+a3+a4+a5+a6+a7+a8+a9+a10))
+  sleep 0.4
+  read -r _ b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 < /proc/stat
+  idle_b=$((b4 + b5))
+  total_b=$((b1+b2+b3+b4+b5+b6+b7+b8+b9+b10))
+  local idle_delta=$((idle_b - idle_a))
+  local total_delta=$((total_b - total_a))
+  if (( total_delta <= 0 )); then echo "0"; return; fi
+  local usage=$(( (1000 * (total_delta - idle_delta) / total_delta + 5) / 10 ))
+  echo "$usage"
+}
+
+cpu_model() {
+  local m=""
+  if has_cmd lscpu; then
+    m="$(lscpu 2>/dev/null | awk -F: '/Model name/ {gsub(/^[ \t]+/,"",$2); print $2; exit}' || true)"
+  fi
+  if [[ -z "$m" ]]; then
+    m="$(awk -F: '/model name/ {gsub(/^[ \t]+/,"",$2); print $2; exit}' /proc/cpuinfo 2>/dev/null || true)"
+  fi
+  echo "${m:-Unknown}"
+}
+
+uptime_pretty() {
+  if has_cmd uptime; then
+    uptime -p 2>/dev/null | sed 's/^up //'
+  else
+    echo "Unknown"
+  fi
 }
 
 # =========================
-# 1) BBR/QDISC
+# BBR/QDISC
 # =========================
 BBR_ALGO="cubic"
 QDISC="fq_codel"
@@ -352,18 +465,18 @@ check_kernel_bbr() {
 }
 
 # =========================
-# 2) DNS (SAFE)
+# DNS (SAFE)
 # =========================
 select_dns() {
-  clear
+  print_logo
   title_box "DNS Provider Selection"
-  echo -e "${BOLD}1)${NC} Cloudflare  (1.1.1.1 / 1.0.0.1)"
-  echo -e "${BOLD}2)${NC} Google      (8.8.8.8 / 8.8.4.4)"
-  echo -e "${BOLD}3)${NC} Quad9       (9.9.9.9 / 149.112.112.112)"
-  echo -e "${BOLD}4)${NC} OpenDNS     (208.67.222.222 / 208.67.220.220)"
-  echo -e "${BOLD}5)${NC} Shecan      (178.22.122.100 / 185.51.200.2)"
-  echo -e "${BOLD}6)${NC} Custom"
-  echo -e "${BOLD}0)${NC} Keep current"
+  echo -e "${BOLD}${FG_WHITE}[1]${RESET} Cloudflare  ${FG_GRAY}(1.1.1.1 / 1.0.0.1)${RESET}"
+  echo -e "${BOLD}${FG_WHITE}[2]${RESET} Google      ${FG_GRAY}(8.8.8.8 / 8.8.4.4)${RESET}"
+  echo -e "${BOLD}${FG_WHITE}[3]${RESET} Quad9       ${FG_GRAY}(9.9.9.9 / 149.112.112.112)${RESET}"
+  echo -e "${BOLD}${FG_WHITE}[4]${RESET} OpenDNS     ${FG_GRAY}(208.67.222.222 / 208.67.220.220)${RESET}"
+  echo -e "${BOLD}${FG_WHITE}[5]${RESET} Shecan      ${FG_GRAY}(178.22.122.100 / 185.51.200.2)${RESET}"
+  echo -e "${BOLD}${FG_WHITE}[6]${RESET} Custom"
+  echo -e "${BOLD}${FG_WHITE}[0]${RESET} Keep current"
   hr2
   read -rp "Choice: " d
 
@@ -407,9 +520,7 @@ EOF
 
     systemctl restart systemd-resolved >/dev/null 2>&1 || true
   else
-    # plain resolv.conf mode
     backup /etc/resolv.conf
-    # If it's a symlink, replace with a regular file to make it persistent
     if [[ -L /etc/resolv.conf ]]; then
       rm -f /etc/resolv.conf 2>/dev/null || true
     fi
@@ -423,18 +534,18 @@ EOF
 }
 
 # =========================
-# 3) SYSCTL (SAFE)
+# SYSCTL (SAFE)
 # =========================
 calc_buf_max() {
-  # outputs RMAX WMAX (bytes), conservative to avoid bufferbloat
+  local ram_mb; ram_mb="$(get_ram_mb)"
   local rmax wmax
-  if (( RAM_MB <= 1024 )); then
+  if (( ram_mb <= 1024 )); then
     rmax=$(( 8 * 1024 * 1024 ))
     wmax=$(( 8 * 1024 * 1024 ))
-  elif (( RAM_MB <= 4096 )); then
+  elif (( ram_mb <= 4096 )); then
     rmax=$(( 16 * 1024 * 1024 ))
     wmax=$(( 16 * 1024 * 1024 ))
-  elif (( RAM_MB <= 8192 )); then
+  elif (( ram_mb <= 8192 )); then
     rmax=$(( 32 * 1024 * 1024 ))
     wmax=$(( 32 * 1024 * 1024 ))
   else
@@ -447,6 +558,7 @@ calc_buf_max() {
 apply_sysctl() {
   backup /etc/sysctl.d/99-vpn-opt.conf
 
+  local RAM_MB; RAM_MB="$(get_ram_mb)"
   local CONNTRACK
   if (( RAM_MB <= 1024 )); then CONNTRACK=65536
   elif (( RAM_MB <= 4096 )); then CONNTRACK=262144
@@ -456,7 +568,6 @@ apply_sysctl() {
   local RMAX WMAX
   read -r RMAX WMAX <<<"$(calc_buf_max)"
 
-  # Backlog values: high enough for VPN, not insane
   local SOMAX=8192
   local SYNBK=8192
   local NETDEV=16384
@@ -470,20 +581,16 @@ apply_sysctl() {
 # Generated by ${SCRIPT_NAME} ${VERSION}
 # Focus: stable low-latency for VLESS TCP Reality
 
-# Congestion control
 net.core.default_qdisc=${QDISC}
 net.ipv4.tcp_congestion_control=${BBR_ALGO}
 
-# Backlogs (moderate)
 net.core.somaxconn=${SOMAX}
 net.ipv4.tcp_max_syn_backlog=${SYNBK}
 net.core.netdev_max_backlog=${NETDEV}
 net.ipv4.tcp_syncookies=1
 
-# Ports
 net.ipv4.ip_local_port_range=10240 65535
 
-# TCP behavior (sane defaults)
 net.ipv4.tcp_fastopen=3
 net.ipv4.tcp_slow_start_after_idle=0
 net.ipv4.tcp_no_metrics_save=1
@@ -493,10 +600,10 @@ net.ipv4.tcp_keepalive_intvl=60
 net.ipv4.tcp_keepalive_probes=5
 net.ipv4.tcp_tw_reuse=1
 
-# IMPORTANT: disable MTU probing (prevents runaway MTU shrink on lossy/filtered paths)
+# IMPORTANT: disable MTU probing
 net.ipv4.tcp_mtu_probing=0
 
-# Socket buffers (conservative to avoid bufferbloat)
+# Socket buffers (conservative)
 net.core.rmem_max=${RMAX}
 net.core.wmem_max=${WMAX}
 net.core.rmem_default=262144
@@ -506,13 +613,10 @@ net.ipv4.udp_wmem_min=16384
 net.ipv4.tcp_rmem=4096 87380 ${RMAX}
 net.ipv4.tcp_wmem=4096 65536 ${WMAX}
 
-# Forwarding (VPN servers need this)
 net.ipv4.ip_forward=1
 
-# Conntrack sizing (helps NAT-heavy setups)
 net.netfilter.nf_conntrack_max=${CONNTRACK}
 
-# VM / files
 vm.swappiness=10
 fs.file-max=2097152
 EOF
@@ -522,7 +626,7 @@ EOF
 }
 
 # =========================
-# 4) LIMITS
+# LIMITS
 # =========================
 apply_limits() {
   backup /etc/security/limits.d/99-vpn.conf
@@ -552,7 +656,7 @@ EOF
 }
 
 # =========================
-# 5) IRQBALANCE (optional)
+# IRQBALANCE (optional)
 # =========================
 setup_irqbalance() {
   [[ "$ENABLE_IRQBALANCE" -eq 1 ]] || return 0
@@ -565,7 +669,7 @@ setup_irqbalance() {
 }
 
 # =========================
-# 6) SWAP (optional)
+# SWAP (optional)
 # =========================
 setup_swap() {
   [[ "$ENABLE_SWAP" -eq 1 ]] || return 0
@@ -597,9 +701,10 @@ setup_swap() {
 }
 
 # =========================
-# 7) LEGACY CLEANUP (risk-reducer)
+# LEGACY CLEANUP
 # =========================
 cleanup_legacy() {
+  print_logo
   title_box "Cleanup Legacy Risky Tweaks"
 
   local iface
@@ -608,15 +713,14 @@ cleanup_legacy() {
     local cur
     cur="$(ip link show dev "$iface" 2>/dev/null | awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu"){print $(i+1); exit}}' || true)"
     if [[ -n "${cur:-}" && "${cur:-}" != "1500" ]]; then
-      echo -e "${YELLOW}Resetting MTU on ${iface} to 1500 (runtime only).${NC}"
+      echo -e "${FG_YELLOW}${BOLD}Resetting MTU on ${iface} to 1500 (runtime only).${RESET}"
       ip link set dev "$iface" mtu 1500 2>/dev/null || true
       log "Legacy cleanup: set MTU=1500 on ${iface} (was ${cur})."
     fi
   fi
 
-  # Remove legacy netplan override (DNS/MTU scripts often leave this behind)
   if [[ -f /etc/netplan/99-vpn-override.yaml ]]; then
-    echo -e "${YELLOW}Removing /etc/netplan/99-vpn-override.yaml${NC}"
+    echo -e "${FG_YELLOW}${BOLD}Removing /etc/netplan/99-vpn-override.yaml${RESET}"
     rm -f /etc/netplan/99-vpn-override.yaml 2>/dev/null || true
     if command -v netplan >/dev/null 2>&1; then
       netplan generate >/dev/null 2>&1 || true
@@ -625,12 +729,11 @@ cleanup_legacy() {
     log "Legacy cleanup: removed netplan override."
   fi
 
-  # Remove older resolved drop-ins that forced Domains=~. and other hacks
   local d1="/etc/systemd/resolved.conf.d/99-vpn_optimizer.conf"
   local d2="/etc/systemd/resolved.conf.d/99-${SCRIPT_NAME}.conf"
   for d in "$d1" "$d2"; do
     if [[ -f "$d" ]]; then
-      echo -e "${YELLOW}Removing ${d}${NC}"
+      echo -e "${FG_YELLOW}${BOLD}Removing ${d}${RESET}"
       rm -f "$d" 2>/dev/null || true
       log "Legacy cleanup: removed ${d}"
     fi
@@ -646,17 +749,20 @@ cleanup_legacy() {
     systemctl restart systemd-resolved >/dev/null 2>&1 || true
   fi
 
-  echo -e "${GREEN}OK: Legacy cleanup done (best effort).${NC}"
+  echo -e "${FG_GREEN}${BOLD}OK:${RESET} Legacy cleanup done (best effort)."
   hr
   pause
   return 0
 }
 
 # =========================
-# 8) ROLLBACK
+# ROLLBACK
 # =========================
 restore_defaults() {
-  read -rp "Rollback will revert files touched by this script (latest run). Continue? [y/N]: " c
+  print_logo
+  title_box "Rollback (Latest Backup)"
+  echo -e "${FG_YELLOW}${BOLD}Rollback will revert files touched by this script (latest run).${RESET}"
+  read -rp "Continue? [y/N]: " c
   [[ "${c:-}" != "y" ]] && return 0
 
   restore_from_latest_or_remove /etc/sysctl.d/99-vpn-opt.conf
@@ -671,71 +777,154 @@ restore_defaults() {
   sysctl --system >/dev/null 2>&1 || true
   systemctl restart systemd-resolved >/dev/null 2>&1 || true
 
-  echo -e "${GREEN}OK: Rollback complete.${NC}"
-  pause
-  return 0
-}
-
-# =========================
-# 9) STATUS
-# =========================
-show_status() {
-  clear
-  title_box "System Status (Detailed)"
-
-  kv "OS" "$OS_NAME"
-  kv "Kernel" "$KERNEL_FULL"
-  kv "RAM" "${RAM_MB} MB"
-  kv "Default IF" "${DEFAULT_IFACE:-unknown}"
-  kv "Gateway" "${DEFAULT_GW:-unknown}"
-  kv "DNS" "${DNS1} / ${DNS2}"
-  hr2
-
-  echo -e "${BOLD}${BLUE}Networking:${NC}"
-  echo "ip -br link:"
-  ip -br link 2>/dev/null || true
-  echo
-  echo "ip route:"
-  ip route 2>/dev/null || true
-  echo
-  echo "sysctl highlights:"
-  sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc net.ipv4.tcp_mtu_probing net.core.rmem_max net.core.wmem_max 2>/dev/null || true
-  hr2
-
-  echo -e "${BOLD}${BLUE}DNS stack:${NC}"
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    echo "systemd-resolved: active"
-    resolvectl status 2>/dev/null | sed -n '1,140p' || true
-  else
-    echo "systemd-resolved: not active"
-    echo "/etc/resolv.conf:"
-    ls -l /etc/resolv.conf 2>/dev/null || true
-    sed -n '1,80p' /etc/resolv.conf 2>/dev/null || true
-  fi
-
+  echo -e "${FG_GREEN}${BOLD}OK:${RESET} Rollback complete."
   hr
   pause
   return 0
 }
 
 # =========================
-# 10) OPTIMIZE SERVER (SAFE APPLY)
+# STATUS (Enhanced)
+# =========================
+show_status() {
+  print_logo
+  title_box "System Status (Enhanced)"
+
+  local RAM_MB; RAM_MB="$(get_ram_mb)"
+  local cpu_m; cpu_m="$(cpu_model)"
+  local cpu_cores; cpu_cores="$(nproc 2>/dev/null || echo 0)"
+  local cpu_use; cpu_use="$(cpu_usage_pct 2>/dev/null || echo 0)"
+  local up; up="$(uptime_pretty)"
+
+  local cc qdisc mtu_probe
+  cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
+  mtu_probe="$(sysctl -n net.ipv4.tcp_mtu_probing 2>/dev/null || echo "?")"
+
+  local bbr_state
+  if [[ "$cc" == "bbr" ]]; then
+    bbr_state="Enabled (bbr)"
+  else
+    bbr_state="Disabled (using: ${cc})"
+  fi
+
+  local mem_total mem_used mem_free mem_avail
+  if has_cmd free; then
+    mem_total="$(free -h | awk '/Mem:/ {print $2}' || echo "?")"
+    mem_used="$(free -h | awk '/Mem:/ {print $3}' || echo "?")"
+    mem_free="$(free -h | awk '/Mem:/ {print $4}' || echo "?")"
+    mem_avail="$(free -h | awk '/Mem:/ {print $7}' || echo "?")"
+  else
+    mem_total="?"; mem_used="?"; mem_free="?"; mem_avail="?"
+  fi
+
+  local disk_total disk_used disk_avail disk_pct
+  disk_total="$(df -h / 2>/dev/null | awk 'NR==2{print $2}' || echo "?")"
+  disk_used="$(df -h / 2>/dev/null | awk 'NR==2{print $3}' || echo "?")"
+  disk_avail="$(df -h / 2>/dev/null | awk 'NR==2{print $4}' || echo "?")"
+  disk_pct="$(df -h / 2>/dev/null | awk 'NR==2{print $5}' || echo "?")"
+
+  local swap_on swap_total swap_used
+  if swapon --show 2>/dev/null | grep -q .; then
+    swap_on="Enabled"
+    swap_total="$(free -h 2>/dev/null | awk '/Swap:/ {print $2}' || echo "?")"
+    swap_used="$(free -h 2>/dev/null | awk '/Swap:/ {print $3}' || echo "?")"
+  else
+    swap_on="Disabled"
+    swap_total="0"
+    swap_used="0"
+  fi
+
+  local ip4 ip6
+  ip4="$(get_public_ip4)"
+  ip6="$(get_public_ip6)"
+
+  section "System"
+  kv "OS" "$OS_NAME"
+  kv "Kernel" "$KERNEL_FULL"
+  kv "Uptime" "${up:-Unknown}"
+  hr
+
+  section "CPU"
+  kv "Model" "$cpu_m"
+  kv "Cores/Threads" "$cpu_cores"
+  kv "Usage" "${cpu_use}%"
+  hr
+
+  section "Memory"
+  kv "RAM Total" "$mem_total"
+  kv "RAM Used" "$mem_used"
+  kv "RAM Free" "$mem_free"
+  kv "RAM Available" "$mem_avail"
+  hr
+
+  section "Disk (/)"
+  kv "Total" "$disk_total"
+  kv "Used" "$disk_used"
+  kv "Free" "$disk_avail"
+  kv "Usage" "$disk_pct"
+  hr
+
+  section "Swap"
+  kv "Status" "$swap_on"
+  kv "Total" "$swap_total"
+  kv "Used" "$swap_used"
+  hr
+
+  section "Network"
+  kv "Default IF" "${DEFAULT_IFACE:-unknown}"
+  kv "Gateway" "${DEFAULT_GW:-unknown}"
+  kv "IPv4 (public)" "${ip4:-N/A}"
+  kv "IPv6 (public)" "${ip6:-N/A}"
+  hr
+
+  section "TCP / VPN Tuning"
+  kv "BBR" "$bbr_state"
+  kv "qdisc" "$qdisc"
+  kv "tcp_mtu_probing" "$mtu_probe"
+  kv "DNS (selected)" "${DNS1} / ${DNS2}"
+  hr
+
+  section "Quick Network Snapshot"
+  echo -e "${DIM}${FG_GRAY}ip -br addr:${RESET}"
+  ip -br addr 2>/dev/null || true
+  echo
+  echo -e "${DIM}${FG_GRAY}ip route:${RESET}"
+  ip route 2>/dev/null || true
+  echo
+  echo -e "${DIM}${FG_GRAY}DNS stack:${RESET}"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    echo -e "${FG_GREEN}systemd-resolved: active${RESET}"
+    resolvectl dns 2>/dev/null || true
+  else
+    echo -e "${FG_YELLOW}systemd-resolved: not active${RESET}"
+    ls -l /etc/resolv.conf 2>/dev/null || true
+    sed -n '1,40p' /etc/resolv.conf 2>/dev/null || true
+  fi
+
+  hr2
+  echo -e "${DIM}${FG_GRAY}Log: ${LOG_FILE}${RESET}"
+  pause
+  return 0
+}
+
+# =========================
+# OPTIMIZE SERVER (SAFE APPLY)
 # =========================
 optimize_server() {
-  clear
+  print_logo
   title_box "Run Optimization (SAFE)"
 
   init_backup_dir
-  echo -e "${GRAY}Backups: ${NC}${BOLD}$BACKUP_DIR${NC}"
-  echo -e "${GRAY}Log    : ${NC}${BOLD}$LOG_FILE${NC}"
-  hr2
+  echo -e "${FG_GRAY}Backups:${RESET} ${BOLD}${FG_WHITE}$BACKUP_DIR${RESET}"
+  echo -e "${FG_GRAY}Log:${RESET}     ${BOLD}${FG_WHITE}$LOG_FILE${RESET}"
+  hr
 
   select_dns
 
-  clear
+  print_logo
   title_box "Applying Changes"
 
-  # Build step list dynamically (so the bar is accurate)
   local steps=()
   steps+=(check_kernel_bbr)
   steps+=(apply_dns)
@@ -763,16 +952,16 @@ optimize_server() {
   progress_bar 100 "Done"
   echo
   hr
-  echo -e "${GREEN}DONE: Optimization completed successfully.${NC}"
-  echo -e "${GRAY}Backups: ${NC}${BOLD}$BACKUP_DIR${NC}${GRAY} (latest -> ${BOLD}$BACKUP_LATEST_LINK${NC}${GRAY})${NC}"
-  echo -e "${GRAY}Log: ${NC}${BOLD}$LOG_FILE${NC}"
+  echo -e "${FG_GREEN}${BOLD}DONE:${RESET} Optimization completed successfully."
+  echo -e "${FG_GRAY}Backups:${RESET} ${BOLD}${FG_WHITE}$BACKUP_DIR${RESET} ${DIM}${FG_GRAY}(latest -> $BACKUP_LATEST_LINK)${RESET}"
+  echo -e "${FG_GRAY}Log:${RESET}     ${BOLD}${FG_WHITE}$LOG_FILE${RESET}"
   hr
   pause
   return 0
 }
 
 # =========================
-# 11) UFW FIREWALL
+# UFW FIREWALL
 # =========================
 setup_ufw() {
   install_pkg ufw || true
@@ -796,39 +985,47 @@ setup_ufw() {
 }
 
 # =========================
-# MAIN LOOP (MENU)
+# MENU LOOP
 # =========================
 while true; do
-  clear
-  print_banner
+  print_logo
 
-  echo -e "${BOLD}${GREEN}VPN SERVER OPTIMIZER - ${VERSION}${NC}  ${GRAY}(VLESS TCP Reality SAFE)${NC}"
-  hr2
-  kv "OS" "$OS_NAME"
-  kv "Kernel" "$KERNEL_BASE"
-  kv "RAM" "${RAM_MB} MB"
-  kv "Interfaces" "$(echo "${PHY_INTERFACES:-}" | tr '\n' ' ' | xargs)"
-  hr2
-  summary_line
+  local_ram="$(get_ram_mb)"
+  local_cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
+  local_qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
+  local_ip4="$(get_public_ip4)"
+  local_ip6="$(get_public_ip6)"
+
+  echo -e "${BOLD}${FG_WHITE}VPN SERVER OPTIMIZER${RESET} ${DIM}${FG_GRAY}${VERSION}${RESET}   ${FG_GRAY}(VLESS TCP Reality SAFE)${RESET}"
   hr
 
-  echo -e "${BOLD}[1]${NC} Optimize Server (Safe Apply)"
-  echo -e "${BOLD}[2]${NC} System Status (Detailed)"
-  echo -e "${BOLD}[3]${NC} Rollback (latest backup)"
-  echo -e "${BOLD}[4]${NC} Enable irqbalance"
-  echo -e "${BOLD}[5]${NC} DNS Provider (Safe Apply)"
-  echo -e "${BOLD}[6]${NC} Cleanup legacy risky tweaks (MTU/netplan/resolved)"
+  kv "OS" "$OS_NAME"
+  kv "Kernel" "$KERNEL_BASE"
+  kv "RAM" "${local_ram} MB"
+  kv "Default IF" "${DEFAULT_IFACE:-unknown}"
+  kv "IPv4/IPv6" "${local_ip4:-N/A} | ${local_ip6:-N/A}"
+  hr
+
+  echo -e "${DIM}${FG_GRAY}TCP:${RESET} cc=${BOLD}${FG_WHITE}${local_cc}${RESET}  qdisc=${BOLD}${FG_WHITE}${local_qdisc}${RESET}   ${DIM}${FG_GRAY}DNS:${RESET} ${DNS1}/${DNS2}"
+  hr2
+
+  echo -e "${BOLD}${FG_WHITE}[1]${RESET} Optimize Server (Safe Apply)"
+  echo -e "${BOLD}${FG_WHITE}[2]${RESET} System Status (Enhanced)"
+  echo -e "${BOLD}${FG_WHITE}[3]${RESET} Rollback (latest backup)"
+  echo -e "${BOLD}${FG_WHITE}[4]${RESET} Enable irqbalance"
+  echo -e "${BOLD}${FG_WHITE}[5]${RESET} DNS Provider (Safe Apply)"
+  echo -e "${BOLD}${FG_WHITE}[6]${RESET} Cleanup legacy risky tweaks (MTU/netplan/resolved)"
   if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
-    echo -e "${BOLD}[7]${NC} Setup Firewall (UFW)"
-    echo -e "${BOLD}[8]${NC} Reboot Server"
-    echo -e "${BOLD}[0]${NC} Exit"
+    echo -e "${BOLD}${FG_WHITE}[7]${RESET} Setup Firewall (UFW)"
+    echo -e "${BOLD}${FG_WHITE}[8]${RESET} Reboot Server"
+    echo -e "${BOLD}${FG_WHITE}[0]${RESET} Exit"
   else
-    echo -e "${BOLD}[7]${NC} Reboot Server"
-    echo -e "${BOLD}[0]${NC} Exit"
+    echo -e "${BOLD}${FG_WHITE}[7]${RESET} Reboot Server"
+    echo -e "${BOLD}${FG_WHITE}[0]${RESET} Exit"
   fi
 
   hr
-  echo -e "${GRAY}Creator: UnknownZero  Telegram ID: @UnknownZero${NC}"
+  echo -e "${DIM}${FG_GRAY}Optimizer For VPN Servers By @UnknownZero${RESET}"
   hr2
 
   read -rp "Select: " opt
@@ -838,18 +1035,20 @@ while true; do
     2) show_status ;;
     3) restore_defaults ;;
     4)
+      print_logo
       title_box "Enable irqbalance"
       setup_irqbalance
       if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet irqbalance 2>/dev/null; then
-        echo -e "${GREEN}OK: irqbalance is active.${NC}"
+        echo -e "${FG_GREEN}${BOLD}OK:${RESET} irqbalance is active."
       else
-        echo -e "${YELLOW}WARN: irqbalance is not active (some VMs have limited IRQ behavior).${NC}"
+        echo -e "${FG_YELLOW}${BOLD}WARN:${RESET} irqbalance is not active (some VMs limit IRQ behavior)."
       fi
       hr
       pause
       ;;
     5)
       select_dns
+      print_logo
       title_box "Apply DNS (SAFE)"
       init_backup_dir
       run_step 1 1 "Apply DNS (safe)" apply_dns || true
@@ -859,6 +1058,7 @@ while true; do
     6) cleanup_legacy ;;
     7)
       if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
+        print_logo
         title_box "UFW Firewall"
         setup_ufw
         pause
@@ -870,11 +1070,11 @@ while true; do
       if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
         reboot
       else
-        echo -e "${RED}Invalid option.${NC}"
+        echo -e "${FG_RED}${BOLD}Invalid option.${RESET}"
         sleep 1
       fi
       ;;
     0) exit ;;
-    *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
+    *) echo -e "${FG_RED}${BOLD}Invalid option.${RESET}"; sleep 1 ;;
   esac
 done
