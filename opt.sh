@@ -49,21 +49,41 @@ if ! ( touch "$LOG_FILE" 2>/dev/null ); then
 fi
 
 # =========================
-# COLORS (readable on light & dark terminals)
+# COLORS (stylish, readable; prefers dark/mid tones)
 # =========================
 RESET='\033[0m'
 BOLD='\033[1m'
 DIM='\033[2m'
 
-# Standard ANSI colors (more readable than 256-color bright tones)
-FG_RED='\033[0;31m'
-FG_GREEN='\033[0;32m'
-FG_YELLOW='\033[0;33m'
-FG_BLUE='\033[0;34m'
-FG_MAGENTA='\033[0;35m'
-FG_CYAN='\033[0;36m'
-FG_GRAY='\033[0;37m'
-FG_WHITE='\033[0;37m'
+# Detect 256-color support
+TERM_COLORS="$(tput colors 2>/dev/null || echo 0)"
+if [[ "${TERM_COLORS:-0}" -ge 256 ]]; then
+  # 256-color palette (dark/mid, not neon)
+  FG_RED='\033[38;5;124m'      # dark red
+  FG_JIGARI='\033[38;5;88m'    # maroon/jigari
+  FG_GREEN='\033[38;5;28m'     # royal green (dark)
+  FG_BLUE='\033[38;5;25m'      # deep blue
+  FG_NAVY='\033[38;5;18m'      # navy/sorme-i
+  FG_CYAN='\033[38;5;30m'      # teal-ish (not bright)
+  FG_MAGENTA='\033[38;5;90m'   # muted purple
+  FG_YELLOW='\033[38;5;136m'   # mustard/gold (not bright)
+  FG_GRAY='\033[38;5;240m'     # dark gray
+  FG_WHITE='\033[38;5;252m'    # soft white (not blinding)
+else
+  # ANSI fallback (still readable)
+  FG_RED='\033[0;31m'
+  FG_JIGARI='\033[0;31m'       # fallback: red
+  FG_GREEN='\033[0;32m'
+  FG_BLUE='\033[0;34m'
+  FG_NAVY='\033[0;34m'         # fallback: blue
+  FG_CYAN='\033[0;36m'
+  FG_MAGENTA='\033[0;35m'
+  FG_YELLOW='\033[0;33m'
+  FG_GRAY='\033[0;90m'
+  FG_WHITE='\033[0;37m'
+fi
+
+
 
 
 # =========================
