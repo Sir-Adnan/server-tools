@@ -49,39 +49,108 @@ if ! ( touch "$LOG_FILE" 2>/dev/null ); then
 fi
 
 # =========================
-# COLORS (stylish, readable; prefers dark/mid tones)
+# COLORS (adaptive: readable on light & dark terminals)
 # =========================
 RESET='\033[0m'
 BOLD='\033[1m'
 DIM='\033[2m'
 
-# Detect 256-color support
+# Theme override: export UI_THEME=light|dark
+UI_THEME="${UI_THEME:-auto}"
+
+detect_theme() {
+  # Try COLORFGBG like "15;0" or "0;15" (varies by terminal)
+  if [[ "${UI_THEME}" == "light" || "${UI_THEME}" == "dark" ]]; then
+    echo "$UI_THEME"; return
+  fi
+  if [[ -n "${COLORFGBG:-}" ]]; then
+    local bg="${COLORFGBG##*;}"
+    if [[ "$bg" =~ ^[0-9]+$ ]]; then
+      # 7/15 typically mean light backgrounds
+      if (( bg == 7 || bg == 15 )); then echo "light"; else echo "dark"; fi
+      return
+    fi
+  fi
+  # default (safer for servers)
+  echo "dark"
+}
+
+THEME="$(detect_theme)"
+
 TERM_COLORS="$(tput colors 2>/dev/null || echo 0)"
-if [[ "${TERM_COLORS:-0}" -ge 256 ]]; then
-  # 256-color palette (dark/mid, not neon)
-  FG_RED='\033[38;5;124m'      # dark red
-  FG_JIGARI='\033[38;5;88m'    # maroon/jigari
-  FG_GREEN='\033[38;5;28m'     # royal green (dark)
-  FG_BLUE='\033[38;5;25m'      # deep blue
-  FG_NAVY='\033[38;5;18m'      # navy/sorme-i
-  FG_CYAN='\033[38;5;30m'      # teal-ish (not bright)
-  FG_MAGENTA='\033[38;5;90m'   # muted purple
-  FG_YELLOW='\033[38;5;136m'   # mustard/gold (not bright)
-  FG_GRAY='\033[38;5;240m'     # dark gray
-  FG_WHITE='\033[38;5;252m'    # soft white (not blinding)
+HAS_256=0
+[[ "${TERM_COLORS:-0}" -ge 256 ]] && HAS_256=1
+
+# Defaults (will be overwritten)
+FG_RED=''; FG_JIGARI=''; FG_GREEN=''; FG_BLUE=''; FG_NAVY=''
+FG_CYAN=''; FG_MAGENTA=''; FG_YELLOW=''; FG_GRAY=''; FG_WHITE=''
+FG_KEY=''; FG_VAL=''; FG_MUTED=''
+
+if [[ "$THEME" == "light" ]]; then
+  # LIGHT THEME: use DARK ink colors (high contrast)
+  DIM=''  # disable dim on light backgrounds (it becomes invisible)
+
+  FG_WHITE='\033[0;30m'   # black text (yes, seriously)
+  FG_GRAY='\033[0;30m'    # separators in black for readability
+  FG_MUTED='\033[0;30m'
+
+  # accents (dark/mid)
+  if (( HAS_256 )); then
+    FG_RED='\033[38;5;124m'     # dark red
+    FG_JIGARI='\033[38;5;88m'   # maroon/jigari (dark)
+    FG_GREEN='\033[38;5;22m'    # deep green
+    FG_BLUE='\033[38;5;24m'     # deep blue
+    FG_NAVY='\033[38;5;17m'     # navy
+    FG_CYAN='\033[38;5;30m'     # teal
+    FG_MAGENTA='\033[38;5;90m'  # muted purple
+    FG_YELLOW='\033[38;5;94m'   # dark gold
+  else
+    FG_RED='\033[0;31m'
+    FG_JIGARI='\033[0;31m'
+    FG_GREEN='\033[0;32m'
+    FG_BLUE='\033[0;34m'
+    FG_NAVY='\033[0;34m'
+    FG_CYAN='\033[0;36m'
+    FG_MAGENTA='\033[0;35m'
+    FG_YELLOW='\033[0;33m'
+  fi
+
+  # key/value styling
+  FG_KEY="$FG_NAVY"
+  FG_VAL="$FG_WHITE"
+
 else
-  # ANSI fallback (still readable)
-  FG_RED='\033[0;31m'
-  FG_JIGARI='\033[0;31m'       # fallback: red
-  FG_GREEN='\033[0;32m'
-  FG_BLUE='\033[0;34m'
-  FG_NAVY='\033[0;34m'         # fallback: blue
-  FG_CYAN='\033[0;36m'
-  FG_MAGENTA='\033[0;35m'
-  FG_YELLOW='\033[0;33m'
-  FG_GRAY='\033[0;90m'
-  FG_WHITE='\033[0;37m'
+  # DARK THEME: keep stylish but not neon
+  if (( HAS_256 )); then
+    FG_RED='\033[38;5;124m'
+    FG_JIGARI='\033[38;5;88m'
+    FG_GREEN='\033[38;5;28m'
+    FG_BLUE='\033[38;5;25m'
+    FG_NAVY='\033[38;5;18m'
+    FG_CYAN='\033[38;5;30m'
+    FG_MAGENTA='\033[38;5;90m'
+    FG_YELLOW='\033[38;5;136m'
+    FG_GRAY='\033[38;5;240m'
+    FG_WHITE='\033[38;5;252m'
+    FG_MUTED='\033[38;5;245m'
+  else
+    FG_RED='\033[0;31m'
+    FG_JIGARI='\033[0;31m'
+    FG_GREEN='\033[0;32m'
+    FG_BLUE='\033[0;34m'
+    FG_NAVY='\033[0;34m'
+    FG_CYAN='\033[0;36m'
+    FG_MAGENTA='\033[0;35m'
+    FG_YELLOW='\033[0;33m'
+    FG_GRAY='\033[0;90m'
+    FG_WHITE='\033[0;37m'
+    FG_MUTED='\033[0;37m'
+  fi
+
+  FG_KEY="$FG_CYAN"
+  FG_VAL="$FG_WHITE"
 fi
+
 
 
 
@@ -214,12 +283,13 @@ title_box() {
 
 section() {
   local text="$1"
-  echo -e "${BOLD}${FG_BLUE}[$text]${RESET}"
+  echo -e "${BOLD}${FG_KEY}[${text}]${RESET}"
 }
 
 kv() {
   local k="$1" v="$2"
-  printf "%b%-18s%b %b%s%b\n" "$DIM$FG_GRAY" "$k:" "$RESET" "$BOLD$FG_WHITE" "$v" "$RESET"
+  # keys: colored, values: black on light theme / soft white on dark theme
+  printf "%b%-18s%b %b%s%b\n" "${BOLD}${FG_KEY}" "${k}:" "${RESET}" "${BOLD}${FG_VAL}" "${v}" "${RESET}"
 }
 
 ok()   { echo -e "${FG_GREEN}${BOLD}OK${RESET}"; }
