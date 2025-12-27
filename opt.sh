@@ -49,21 +49,22 @@ if ! ( touch "$LOG_FILE" 2>/dev/null ); then
 fi
 
 # =========================
-# COLORS (tasteful)
+# COLORS (readable on light & dark terminals)
 # =========================
 RESET='\033[0m'
 BOLD='\033[1m'
 DIM='\033[2m'
 
-# Modern-ish palette
-FG_RED='\033[38;5;203m'
-FG_GREEN='\033[38;5;82m'
-FG_YELLOW='\033[38;5;220m'
-FG_BLUE='\033[38;5;75m'
-FG_MAGENTA='\033[38;5;141m'
-FG_CYAN='\033[38;5;51m'
-FG_GRAY='\033[38;5;245m'
-FG_WHITE='\033[38;5;255m'
+# Standard ANSI colors (more readable than 256-color bright tones)
+FG_RED='\033[0;31m'
+FG_GREEN='\033[0;32m'
+FG_YELLOW='\033[0;33m'
+FG_BLUE='\033[0;34m'
+FG_MAGENTA='\033[0;35m'
+FG_CYAN='\033[0;36m'
+FG_GRAY='\033[0;90m'
+FG_WHITE='\033[0;37m'
+
 
 # =========================
 # ROOT CHECK
