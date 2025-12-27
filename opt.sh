@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================
-# VPN SERVER OPTIMIZER — UI POLISHED SAFE BUILD (V15.1.0-UI)
+# VPN SERVER OPTIMIZER — UI CLEAN SAFE BUILD (V15.2.0-UI)
 # Target: Xray / VLESS TCP Reality (stable, low-latency)
 #
 # SAFE by design:
@@ -8,6 +8,11 @@
 # - DOES NOT tune NIC ring buffers (ethtool ring often harms VPS latency)
 # - DISABLES tcp_mtu_probing (prevents runaway MTU shrink on lossy paths)
 # - DOES NOT route all DNS via Domains=~. (no global DNS hijack)
+#
+# UI design:
+# - No bright colors
+# - Values are NOT colored (always readable on light/dark terminals)
+# - Only titles/labels/highlights use dark-ish ANSI colors (jigari/blue/navy/green)
 # ============================================================
 
 set -Eeuo pipefail
@@ -17,7 +22,7 @@ IFS=$'\n\t'
 # CONFIG
 # =========================
 SCRIPT_NAME="vpn_optimizer"
-VERSION="V15.1.0-UI"
+VERSION="V15.2.0-UI"
 
 BACKUP_ROOT="/root/vpn_optimizer_backups"
 RUN_ID="$(date +%F_%H-%M-%S)"
@@ -49,117 +54,37 @@ if ! ( touch "$LOG_FILE" 2>/dev/null ); then
 fi
 
 # =========================
-# COLORS (adaptive: readable on light & dark terminals)
+# COLORS (clean & readable on light/dark terminals)
+# Strategy: Color ONLY labels/titles. Keep VALUES in default terminal color.
 # =========================
 RESET='\033[0m'
 BOLD='\033[1m'
-DIM='\033[2m'
 
-# Theme override: export UI_THEME=light|dark
-UI_THEME="${UI_THEME:-auto}"
+# Accents (classic ANSI, not bright neon)
+FG_RED='\033[0;31m'
+FG_JIGARI='\033[0;31m'   # maroon-ish
+FG_GREEN='\033[0;32m'    # royal-ish green
+FG_YELLOW='\033[0;33m'
+FG_BLUE='\033[0;34m'
+FG_NAVY='\033[0;34m'     # stable "navy"
+FG_MAGENTA='\033[0;35m'
+FG_CYAN='\033[0;36m'
 
-detect_theme() {
-  # Try COLORFGBG like "15;0" or "0;15" (varies by terminal)
-  if [[ "${UI_THEME}" == "light" || "${UI_THEME}" == "dark" ]]; then
-    echo "$UI_THEME"; return
-  fi
-  if [[ -n "${COLORFGBG:-}" ]]; then
-    local bg="${COLORFGBG##*;}"
-    if [[ "$bg" =~ ^[0-9]+$ ]]; then
-      # 7/15 typically mean light backgrounds
-      if (( bg == 7 || bg == 15 )); then echo "light"; else echo "dark"; fi
-      return
-    fi
-  fi
-  # default (safer for servers)
-  echo "dark"
-}
-
-THEME="$(detect_theme)"
-
-TERM_COLORS="$(tput colors 2>/dev/null || echo 0)"
-HAS_256=0
-[[ "${TERM_COLORS:-0}" -ge 256 ]] && HAS_256=1
-
-# Defaults (will be overwritten)
-FG_RED=''; FG_JIGARI=''; FG_GREEN=''; FG_BLUE=''; FG_NAVY=''
-FG_CYAN=''; FG_MAGENTA=''; FG_YELLOW=''; FG_GRAY=''; FG_WHITE=''
-FG_KEY=''; FG_VAL=''; FG_MUTED=''
-
-if [[ "$THEME" == "light" ]]; then
-  # LIGHT THEME: use DARK ink colors (high contrast)
-  DIM=''  # disable dim on light backgrounds (it becomes invisible)
-
-  FG_WHITE='\033[0;30m'   # black text (yes, seriously)
-  FG_GRAY='\033[0;30m'    # separators in black for readability
-  FG_MUTED='\033[0;30m'
-
-  # accents (dark/mid)
-  if (( HAS_256 )); then
-    FG_RED='\033[38;5;124m'     # dark red
-    FG_JIGARI='\033[38;5;88m'   # maroon/jigari (dark)
-    FG_GREEN='\033[38;5;22m'    # deep green
-    FG_BLUE='\033[38;5;24m'     # deep blue
-    FG_NAVY='\033[38;5;17m'     # navy
-    FG_CYAN='\033[38;5;30m'     # teal
-    FG_MAGENTA='\033[38;5;90m'  # muted purple
-    FG_YELLOW='\033[38;5;94m'   # dark gold
-  else
-    FG_RED='\033[0;31m'
-    FG_JIGARI='\033[0;31m'
-    FG_GREEN='\033[0;32m'
-    FG_BLUE='\033[0;34m'
-    FG_NAVY='\033[0;34m'
-    FG_CYAN='\033[0;36m'
-    FG_MAGENTA='\033[0;35m'
-    FG_YELLOW='\033[0;33m'
-  fi
-
-  # key/value styling
-  FG_KEY="$FG_NAVY"
-  FG_VAL="$FG_WHITE"
-
-else
-  # DARK THEME: keep stylish but not neon
-  if (( HAS_256 )); then
-    FG_RED='\033[38;5;124m'
-    FG_JIGARI='\033[38;5;88m'
-    FG_GREEN='\033[38;5;28m'
-    FG_BLUE='\033[38;5;25m'
-    FG_NAVY='\033[38;5;18m'
-    FG_CYAN='\033[38;5;30m'
-    FG_MAGENTA='\033[38;5;90m'
-    FG_YELLOW='\033[38;5;136m'
-    FG_GRAY='\033[38;5;240m'
-    FG_WHITE='\033[38;5;252m'
-    FG_MUTED='\033[38;5;245m'
-  else
-    FG_RED='\033[0;31m'
-    FG_JIGARI='\033[0;31m'
-    FG_GREEN='\033[0;32m'
-    FG_BLUE='\033[0;34m'
-    FG_NAVY='\033[0;34m'
-    FG_CYAN='\033[0;36m'
-    FG_MAGENTA='\033[0;35m'
-    FG_YELLOW='\033[0;33m'
-    FG_GRAY='\033[0;90m'
-    FG_WHITE='\033[0;37m'
-    FG_MUTED='\033[0;37m'
-  fi
-
-  FG_KEY="$FG_CYAN"
-  FG_VAL="$FG_WHITE"
-fi
-
-
-
-
+# UI roles
+C_TITLE="${BOLD}${FG_NAVY}"
+C_SECTION="${BOLD}${FG_NAVY}"
+C_KEY="${BOLD}${FG_BLUE}"
+C_HI="${BOLD}${FG_JIGARI}"      # highlight (IPs etc.)
+C_OK="${BOLD}${FG_GREEN}"
+C_WARN="${BOLD}${FG_YELLOW}"
+C_FAIL="${BOLD}${FG_RED}"
+C_LINE="${FG_NAVY}"            # separators
 
 # =========================
 # ROOT CHECK
 # =========================
 if [[ ${EUID:-9999} -ne 0 ]]; then
-  echo -e "${FG_RED}${BOLD}This script must be run as root.${RESET}"
+  echo -e "${C_FAIL}This script must be run as root.${RESET}"
   exit 1
 fi
 
@@ -204,7 +129,6 @@ backup() {
   local src="$1"
   [[ -e "$src" || -L "$src" ]] || return 0
   local b="${BACKUP_DIR}/$(basename "$src").bak"
-  # preserve symlink as symlink
   if [[ -L "$src" ]]; then
     local tgt
     tgt="$(readlink "$src" 2>/dev/null || true)"
@@ -236,7 +160,6 @@ restore_from_latest_or_remove() {
 term_width() {
   local c
   c="$(tput cols 2>/dev/null || echo 90)"
-  # clamp
   (( c < 70 )) && c=70
   (( c > 110 )) && c=110
   echo "$c"
@@ -254,12 +177,12 @@ repeat_char() {
 
 hr() {
   local w; w="$(term_width)"
-  echo -e "${FG_GRAY}$(repeat_char "-" "$w")${RESET}"
+  echo -e "${C_LINE}$(repeat_char "-" "$w")${RESET}"
 }
 
 hr2() {
   local w; w="$(term_width)"
-  echo -e "${FG_GRAY}$(repeat_char "=" "$w")${RESET}"
+  echo -e "${C_LINE}$(repeat_char "=" "$w")${RESET}"
 }
 
 center() {
@@ -277,28 +200,28 @@ center() {
 title_box() {
   local text="$1"
   hr
-  echo -e "${BOLD}${FG_CYAN}$(center "$text")${RESET}"
+  echo -e "${C_TITLE}$(center "$text")${RESET}"
   hr
 }
 
 section() {
   local text="$1"
-  echo -e "${BOLD}${FG_KEY}[${text}]${RESET}"
+  echo -e "${C_SECTION}[${text}]${RESET}"
 }
 
 kv() {
   local k="$1" v="$2"
-  # keys: colored, values: black on light theme / soft white on dark theme
-  printf "%b%-18s%b %b%s%b\n" "${BOLD}${FG_KEY}" "${k}:" "${RESET}" "${BOLD}${FG_VAL}" "${v}" "${RESET}"
+  # key colored, value default (no forced color)
+  printf "%b%-18s%b %s\n" "${C_KEY}" "${k}:" "${RESET}" "${v}"
 }
 
-ok()   { echo -e "${FG_GREEN}${BOLD}OK${RESET}"; }
-warn() { echo -e "${FG_YELLOW}${BOLD}WARN${RESET}"; }
-fail() { echo -e "${FG_RED}${BOLD}FAIL${RESET}"; }
+ok()   { echo -e "${C_OK}OK${RESET}"; }
+warn() { echo -e "${C_WARN}WARN${RESET}"; }
+fail() { echo -e "${C_FAIL}FAIL${RESET}"; }
 
 pause() {
   if [[ -t 0 ]]; then
-    read -rp "$(echo -e "${FG_GRAY}Press Enter...${RESET}")"
+    read -rp "Press Enter..."
   else
     sleep 1
   fi
@@ -312,14 +235,14 @@ progress_bar() {
   local empty=$(( width - filled ))
   local bar
   bar="$(repeat_char "#" "$filled")$(repeat_char "." "$empty")"
-  printf "\r%b[%s] %3s%%%b %s" "$FG_MAGENTA" "$bar" "$pct" "$RESET" "$title"
+  printf "\r%b[%s] %3s%%%b %s" "${FG_NAVY}" "$bar" "$pct" "$RESET" "$title"
 }
 
 run_step() {
   local idx="$1" total="$2" title="$3" fn="$4"
   local pct=$(( idx * 100 / total ))
   progress_bar "$pct" "$title"
-  echo -ne "\n${DIM}${FG_GRAY}${title}${RESET} ... "
+  echo -ne "\n$title ... "
   if "$fn"; then
     ok
   else
@@ -330,8 +253,7 @@ run_step() {
 
 print_logo() {
   clear
-  local w; w="$(term_width)"
-  echo -e "${FG_MAGENTA}${BOLD}"
+  echo -e "${FG_JIGARI}${BOLD}"
   cat <<'EOF'
  __      __  _____  _   _
  \ \    / / |  __ \| \ | |
@@ -341,14 +263,16 @@ print_logo() {
      \/     |_|    |_| \_|
 EOF
   echo -e "${RESET}"
-  echo -e "${BOLD}${FG_CYAN}$(center "Optimizer For VPN Servers By @UnknownZero")${RESET}"
-  echo -e "${DIM}${FG_GRAY}$(center "SAFE build for VLESS TCP Reality | UI polished")${RESET}"
+  echo -e "${C_TITLE}$(center "Optimizer For VPN Servers By @UnknownZero")${RESET}"
+  echo -e "$(center "SAFE build for VLESS TCP Reality | UI polished")"
   hr2
 }
 
 # =========================
 # BASIC UTILS
 # =========================
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
 is_valid_ipv4() {
   local ip="$1"
   [[ "$ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
@@ -420,7 +344,6 @@ PHY_INTERFACES="$(ls /sys/class/net 2>/dev/null | grep -Ev 'lo|docker|veth|tun|w
 DEFAULT_IFACE="$(get_default_iface || true)"
 DEFAULT_GW="$(get_default_gw_ipv4 || true)"
 
-# refreshable RAM MB (do not freeze)
 get_ram_mb() { free -m 2>/dev/null | awk '/Mem:/ {print $2}' || echo 0; }
 
 if [[ "${APPLY_DNS_TO_ALL_INTERFACES}" -eq 1 ]]; then
@@ -436,12 +359,9 @@ fi
 # =========================
 # NETWORK / IP HELPERS
 # =========================
-has_cmd() { command -v "$1" >/dev/null 2>&1; }
-
 curl_quick() {
-  # curl_quick <ipver> <url>
   local ipver="$1" url="$2"
-  if ! has_cmd curl; then return 1; fi
+  has_cmd curl || return 1
   if [[ "$ipver" == "4" ]]; then
     curl -4 -fsS --max-time 2 "$url" 2>/dev/null | tr -d ' \n\r'
   else
@@ -455,10 +375,8 @@ get_public_ip4() {
   [[ -n "$ip" ]] || ip="$(curl_quick 4 "https://ifconfig.co/ip" || true)"
   [[ -n "$ip" ]] || ip="$(curl_quick 4 "https://ip.sb" || true)"
   if is_valid_ipv4 "$ip"; then
-    echo "$ip"
-    return 0
+    echo "$ip"; return 0
   fi
-  # fallback to first global ipv4 on interface
   ip="$(ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1 | head -n1 || true)"
   echo "${ip:-N/A}"
 }
@@ -468,18 +386,17 @@ get_public_ip6() {
   ip="$(curl_quick 6 "https://api64.ipify.org" || true)"
   [[ -n "$ip" ]] || ip="$(curl_quick 6 "https://ifconfig.co/ip" || true)"
   [[ -n "$ip" ]] || ip="$(curl_quick 6 "https://ip.sb" || true)"
-  # basic sanity: must contain :
   if [[ "$ip" == *:* ]]; then
-    echo "$ip"
-    return 0
+    echo "$ip"; return 0
   fi
   ip="$(ip -6 addr show scope global 2>/dev/null | awk '/inet6 /{print $2}' | cut -d/ -f1 | head -n1 || true)"
   echo "${ip:-N/A}"
 }
 
-# CPU usage via /proc/stat (more portable than parsing top)
 cpu_usage_pct() {
-  local a b idle_a idle_b total_a total_b
+  local a1 a2 a3 a4 a5 a6 a7 a8 a9 a10
+  local b1 b2 b3 b4 b5 b6 b7 b8 b9 b10
+  local idle_a idle_b total_a total_b
   read -r _ a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 < /proc/stat
   idle_a=$((a4 + a5))
   total_a=$((a1+a2+a3+a4+a5+a6+a7+a8+a9+a10))
@@ -561,13 +478,13 @@ check_kernel_bbr() {
 select_dns() {
   print_logo
   title_box "DNS Provider Selection"
-  echo -e "${BOLD}${FG_WHITE}[1]${RESET} Cloudflare  ${FG_GRAY}(1.1.1.1 / 1.0.0.1)${RESET}"
-  echo -e "${BOLD}${FG_WHITE}[2]${RESET} Google      ${FG_GRAY}(8.8.8.8 / 8.8.4.4)${RESET}"
-  echo -e "${BOLD}${FG_WHITE}[3]${RESET} Quad9       ${FG_GRAY}(9.9.9.9 / 149.112.112.112)${RESET}"
-  echo -e "${BOLD}${FG_WHITE}[4]${RESET} OpenDNS     ${FG_GRAY}(208.67.222.222 / 208.67.220.220)${RESET}"
-  echo -e "${BOLD}${FG_WHITE}[5]${RESET} Shecan      ${FG_GRAY}(178.22.122.100 / 185.51.200.2)${RESET}"
-  echo -e "${BOLD}${FG_WHITE}[6]${RESET} Custom"
-  echo -e "${BOLD}${FG_WHITE}[0]${RESET} Keep current"
+  echo -e "${C_KEY}[1]${RESET} Cloudflare  (1.1.1.1 / 1.0.0.1)"
+  echo -e "${C_KEY}[2]${RESET} Google      (8.8.8.8 / 8.8.4.4)"
+  echo -e "${C_KEY}[3]${RESET} Quad9       (9.9.9.9 / 149.112.112.112)"
+  echo -e "${C_KEY}[4]${RESET} OpenDNS     (208.67.222.222 / 208.67.220.220)"
+  echo -e "${C_KEY}[5]${RESET} Shecan      (178.22.122.100 / 185.51.200.2)"
+  echo -e "${C_KEY}[6]${RESET} Custom"
+  echo -e "${C_KEY}[0]${RESET} Keep current"
   hr2
   read -rp "Choice: " d
 
@@ -752,7 +669,6 @@ EOF
 setup_irqbalance() {
   [[ "$ENABLE_IRQBALANCE" -eq 1 ]] || return 0
   install_pkg irqbalance || true
-
   if command -v systemctl >/dev/null 2>&1; then
     systemctl enable --now irqbalance >/dev/null 2>&1 || true
   fi
@@ -804,14 +720,14 @@ cleanup_legacy() {
     local cur
     cur="$(ip link show dev "$iface" 2>/dev/null | awk '/mtu/ {for(i=1;i<=NF;i++) if($i=="mtu"){print $(i+1); exit}}' || true)"
     if [[ -n "${cur:-}" && "${cur:-}" != "1500" ]]; then
-      echo -e "${FG_YELLOW}${BOLD}Resetting MTU on ${iface} to 1500 (runtime only).${RESET}"
+      echo -e "${C_WARN}Resetting MTU on ${iface} to 1500 (runtime only).${RESET}"
       ip link set dev "$iface" mtu 1500 2>/dev/null || true
       log "Legacy cleanup: set MTU=1500 on ${iface} (was ${cur})."
     fi
   fi
 
   if [[ -f /etc/netplan/99-vpn-override.yaml ]]; then
-    echo -e "${FG_YELLOW}${BOLD}Removing /etc/netplan/99-vpn-override.yaml${RESET}"
+    echo -e "${C_WARN}Removing /etc/netplan/99-vpn-override.yaml${RESET}"
     rm -f /etc/netplan/99-vpn-override.yaml 2>/dev/null || true
     if command -v netplan >/dev/null 2>&1; then
       netplan generate >/dev/null 2>&1 || true
@@ -824,7 +740,7 @@ cleanup_legacy() {
   local d2="/etc/systemd/resolved.conf.d/99-${SCRIPT_NAME}.conf"
   for d in "$d1" "$d2"; do
     if [[ -f "$d" ]]; then
-      echo -e "${FG_YELLOW}${BOLD}Removing ${d}${RESET}"
+      echo -e "${C_WARN}Removing ${d}${RESET}"
       rm -f "$d" 2>/dev/null || true
       log "Legacy cleanup: removed ${d}"
     fi
@@ -840,7 +756,7 @@ cleanup_legacy() {
     systemctl restart systemd-resolved >/dev/null 2>&1 || true
   fi
 
-  echo -e "${FG_GREEN}${BOLD}OK:${RESET} Legacy cleanup done (best effort)."
+  echo -e "${C_OK}Legacy cleanup done (best effort).${RESET}"
   hr
   pause
   return 0
@@ -852,7 +768,7 @@ cleanup_legacy() {
 restore_defaults() {
   print_logo
   title_box "Rollback (Latest Backup)"
-  echo -e "${FG_YELLOW}${BOLD}Rollback will revert files touched by this script (latest run).${RESET}"
+  echo -e "${C_WARN}Rollback will revert files touched by this script (latest run).${RESET}"
   read -rp "Continue? [y/N]: " c
   [[ "${c:-}" != "y" ]] && return 0
 
@@ -868,7 +784,7 @@ restore_defaults() {
   sysctl --system >/dev/null 2>&1 || true
   systemctl restart systemd-resolved >/dev/null 2>&1 || true
 
-  echo -e "${FG_GREEN}${BOLD}OK:${RESET} Rollback complete."
+  echo -e "${C_OK}Rollback complete.${RESET}"
   hr
   pause
   return 0
@@ -977,24 +893,24 @@ show_status() {
   hr
 
   section "Quick Network Snapshot"
-  echo -e "${DIM}${FG_GRAY}ip -br addr:${RESET}"
+  echo -e "${C_KEY}ip -br addr:${RESET}"
   ip -br addr 2>/dev/null || true
   echo
-  echo -e "${DIM}${FG_GRAY}ip route:${RESET}"
+  echo -e "${C_KEY}ip route:${RESET}"
   ip route 2>/dev/null || true
   echo
-  echo -e "${DIM}${FG_GRAY}DNS stack:${RESET}"
+  echo -e "${C_KEY}DNS stack:${RESET}"
   if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    echo -e "${FG_GREEN}systemd-resolved: active${RESET}"
+    echo "systemd-resolved: active"
     resolvectl dns 2>/dev/null || true
   else
-    echo -e "${FG_YELLOW}systemd-resolved: not active${RESET}"
+    echo "systemd-resolved: not active"
     ls -l /etc/resolv.conf 2>/dev/null || true
     sed -n '1,40p' /etc/resolv.conf 2>/dev/null || true
   fi
 
   hr2
-  echo -e "${DIM}${FG_GRAY}Log: ${LOG_FILE}${RESET}"
+  echo "Log: $LOG_FILE"
   pause
   return 0
 }
@@ -1007,8 +923,8 @@ optimize_server() {
   title_box "Run Optimization (SAFE)"
 
   init_backup_dir
-  echo -e "${FG_GRAY}Backups:${RESET} ${BOLD}${FG_WHITE}$BACKUP_DIR${RESET}"
-  echo -e "${FG_GRAY}Log:${RESET}     ${BOLD}${FG_WHITE}$LOG_FILE${RESET}"
+  echo "Backups: $BACKUP_DIR"
+  echo "Log:     $LOG_FILE"
   hr
 
   select_dns
@@ -1043,9 +959,9 @@ optimize_server() {
   progress_bar 100 "Done"
   echo
   hr
-  echo -e "${FG_GREEN}${BOLD}DONE:${RESET} Optimization completed successfully."
-  echo -e "${FG_GRAY}Backups:${RESET} ${BOLD}${FG_WHITE}$BACKUP_DIR${RESET} ${DIM}${FG_GRAY}(latest -> $BACKUP_LATEST_LINK)${RESET}"
-  echo -e "${FG_GRAY}Log:${RESET}     ${BOLD}${FG_WHITE}$LOG_FILE${RESET}"
+  echo -e "${C_OK}DONE:${RESET} Optimization completed successfully."
+  echo "Backups: $BACKUP_DIR (latest -> $BACKUP_LATEST_LINK)"
+  echo "Log:     $LOG_FILE"
   hr
   pause
   return 0
@@ -1087,36 +1003,36 @@ while true; do
   local_ip4="$(get_public_ip4)"
   local_ip6="$(get_public_ip6)"
 
-  echo -e "${BOLD}${FG_WHITE}VPN SERVER OPTIMIZER${RESET} ${DIM}${FG_GRAY}${VERSION}${RESET}   ${FG_GRAY}(VLESS TCP Reality SAFE)${RESET}"
+  echo -e "${C_TITLE}VPN SERVER OPTIMIZER${RESET} ${VERSION} (VLESS TCP Reality SAFE)"
   hr
 
   kv "OS" "$OS_NAME"
   kv "Kernel" "$KERNEL_BASE"
   kv "RAM" "${local_ram} MB"
   kv "Default IF" "${DEFAULT_IFACE:-unknown}"
-  kv "IPv4/IPv6" "${local_ip4:-N/A} | ${local_ip6:-N/A}"
+  kv "IPv4/IPv6" "${local_ip4} | ${local_ip6}"
   hr
 
-  echo -e "${DIM}${FG_GRAY}TCP:${RESET} cc=${BOLD}${FG_WHITE}${local_cc}${RESET}  qdisc=${BOLD}${FG_WHITE}${local_qdisc}${RESET}   ${DIM}${FG_GRAY}DNS:${RESET} ${DNS1}/${DNS2}"
+  echo "TCP: cc=${local_cc}  qdisc=${local_qdisc}  DNS: ${DNS1}/${DNS2}"
   hr2
 
-  echo -e "${BOLD}${FG_WHITE}[1]${RESET} Optimize Server (Safe Apply)"
-  echo -e "${BOLD}${FG_WHITE}[2]${RESET} System Status (Enhanced)"
-  echo -e "${BOLD}${FG_WHITE}[3]${RESET} Rollback (latest backup)"
-  echo -e "${BOLD}${FG_WHITE}[4]${RESET} Enable irqbalance"
-  echo -e "${BOLD}${FG_WHITE}[5]${RESET} DNS Provider (Safe Apply)"
-  echo -e "${BOLD}${FG_WHITE}[6]${RESET} Cleanup legacy risky tweaks (MTU/netplan/resolved)"
+  echo -e "${C_KEY}[1]${RESET} Optimize Server (Safe Apply)"
+  echo -e "${C_KEY}[2]${RESET} System Status (Enhanced)"
+  echo -e "${C_KEY}[3]${RESET} Rollback (latest backup)"
+  echo -e "${C_KEY}[4]${RESET} Enable irqbalance"
+  echo -e "${C_KEY}[5]${RESET} DNS Provider (Safe Apply)"
+  echo -e "${C_KEY}[6]${RESET} Cleanup legacy risky tweaks (MTU/netplan/resolved)"
   if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
-    echo -e "${BOLD}${FG_WHITE}[7]${RESET} Setup Firewall (UFW)"
-    echo -e "${BOLD}${FG_WHITE}[8]${RESET} Reboot Server"
-    echo -e "${BOLD}${FG_WHITE}[0]${RESET} Exit"
+    echo -e "${C_KEY}[7]${RESET} Setup Firewall (UFW)"
+    echo -e "${C_KEY}[8]${RESET} Reboot Server"
+    echo -e "${C_KEY}[0]${RESET} Exit"
   else
-    echo -e "${BOLD}${FG_WHITE}[7]${RESET} Reboot Server"
-    echo -e "${BOLD}${FG_WHITE}[0]${RESET} Exit"
+    echo -e "${C_KEY}[7]${RESET} Reboot Server"
+    echo -e "${C_KEY}[0]${RESET} Exit"
   fi
 
   hr
-  echo -e "${DIM}${FG_GRAY}Optimizer For VPN Servers By @UnknownZero${RESET}"
+  echo "Optimizer For VPN Servers By @UnknownZero"
   hr2
 
   read -rp "Select: " opt
@@ -1130,9 +1046,9 @@ while true; do
       title_box "Enable irqbalance"
       setup_irqbalance
       if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet irqbalance 2>/dev/null; then
-        echo -e "${FG_GREEN}${BOLD}OK:${RESET} irqbalance is active."
+        echo -e "${C_OK}OK:${RESET} irqbalance is active."
       else
-        echo -e "${FG_YELLOW}${BOLD}WARN:${RESET} irqbalance is not active (some VMs limit IRQ behavior)."
+        echo -e "${C_WARN}WARN:${RESET} irqbalance is not active (some VMs limit IRQ behavior)."
       fi
       hr
       pause
@@ -1161,11 +1077,11 @@ while true; do
       if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
         reboot
       else
-        echo -e "${FG_RED}${BOLD}Invalid option.${RESET}"
+        echo -e "${C_FAIL}Invalid option.${RESET}"
         sleep 1
       fi
       ;;
     0) exit ;;
-    *) echo -e "${FG_RED}${BOLD}Invalid option.${RESET}"; sleep 1 ;;
+    *) echo -e "${C_FAIL}Invalid option.${RESET}"; sleep 1 ;;
   esac
 done
