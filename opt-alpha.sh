@@ -1,8 +1,11 @@
 #!/bin/bash
 # ============================================================
-# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V14.3)
+# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V14.3.1)
 # Targets: Xray (TCP/Reality/WS/gRPC) + Hysteria2 (UDP/QUIC)
 # UI Upgrade: Fancy Menus, Progress Display, Rich System Status
+# Fix: DNS1/DNS2 unbound variable (safe defaults + safe expansion)
+# Fix: HR line UTF-8 fallback (avoids "��������" on non-UTF8 terminals)
+#
 # Creator : UnknownZero
 # Telegram ID : @UnknownZero
 # ============================================================
@@ -14,7 +17,8 @@ IFS=$'\n\t'
 # GLOBAL CONFIG
 # =========================
 SCRIPT_NAME="vpn_optimizer"
-VERSION="V14.3"
+VERSION="V14.3.1"
+
 LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 LOG_MAX_SIZE=$((5 * 1024 * 1024))     # 5MB
 LOG_MAX_COUNT=10
@@ -25,20 +29,31 @@ RUN_ID="$(date +%F_%H-%M-%S)"
 BACKUP_DIR="${BACKUP_ROOT}/${RUN_ID}"
 BACKUP_LATEST_LINK="${BACKUP_ROOT}/latest"
 
+# DNS / Netplan behavior:
+# 0 = apply DNS/netplan only to default-route interface (safer)
+# 1 = apply to all detected interfaces (more aggressive)
 APPLY_DNS_TO_ALL_INTERFACES=0
 
+# Optional toggles
 ENABLE_SWAP=1
 ENABLE_UFW_MENU=1
 ENABLE_MTU_OPTIMIZE=1
 
+# CPU/NIC tuning toggles
 ENABLE_IRQBALANCE=1
 ENABLE_ETHTOOL_RING=1
 
+# MTU probing behavior
 MTU_PROBE_TIMEOUT=1
 MTU_MIN=1280
 MTU_HEADROOM=8
 
+# Ethtool ring desired ceiling (we will not force above NIC max)
 RING_DESIRED=4096
+
+# ---- IMPORTANT FIX: DNS defaults (avoid set -u crash) ----
+DNS1="${DNS1:-1.1.1.1}"
+DNS2="${DNS2:-1.0.0.1}"
 
 # =========================
 # COLORS / UI
@@ -67,7 +82,6 @@ ICON_DISK="🗄️"
 ICON_OS="🖥️"
 ICON_TIME="⏱️"
 ICON_LOCK="🔐"
-ICON_FIRE="🔥"
 ICON_WRENCH="🛠️"
 ICON_ROCKET="🚀"
 ICON_REDO="🔄"
@@ -133,7 +147,13 @@ term_cols() { tput cols 2>/dev/null || echo 80; }
 
 hr() {
   local c; c="$(term_cols)"
-  printf "${GRAY}%*s${NC}\n" "$c" "" | tr ' ' '━'
+  local ch="━"
+  if command -v locale >/dev/null 2>&1; then
+    if [[ "$(locale charmap 2>/dev/null || true)" != "UTF-8" ]]; then
+      ch="-"
+    fi
+  fi
+  printf "${GRAY}%*s${NC}\n" "$c" "" | tr ' ' "$ch"
 }
 
 title_box() {
@@ -144,7 +164,6 @@ title_box() {
 }
 
 kv() {
-  # kv "Label" "Value"
   local k="$1" v="$2"
   printf "${BLUE}%-20s${NC} ${BOLD}%s${NC}\n" "$k" "$v"
 }
@@ -157,18 +176,16 @@ subkv() {
 pause() { read -rp "$(echo -e "${GRAY}Press Enter...${NC}")"; }
 
 progress_bar() {
-  # progress_bar percent "message"
   local p="$1" msg="$2"
   local width=30
   local filled=$((p * width / 100))
   local empty=$((width - filled))
-  local bar
+  local bar=""
   bar="$(printf "%0.s█" $(seq 1 $filled) 2>/dev/null)"
   bar+="${DIM}$(printf "%0.s░" $(seq 1 $empty) 2>/dev/null)${NC}"
   printf "\r${PURPLE}${BOLD}[%3s%%]${NC} ${GREEN}%s${NC} ${GRAY}%s${NC}   " "$p" "$bar" "$msg"
 }
 
-# Error trap for nicer output
 on_error() {
   local line="$1" cmd="$2"
   echo
@@ -285,7 +302,7 @@ check_kernel_bbr() {
     log "Kernel < 4.9 — BBR not supported, using cubic"
     BBR_ALGO="cubic"
     QDISC="fq_codel"
-    return
+    return 0
   fi
 
   modprobe tcp_bbr &>/dev/null || true
@@ -304,6 +321,7 @@ check_kernel_bbr() {
     backup /etc/modules-load.d/bbr.conf
     echo "tcp_bbr" > /etc/modules-load.d/bbr.conf
   fi
+  return 0
 }
 
 # ============================================================
@@ -374,6 +392,7 @@ nameserver $DNS1
 nameserver $DNS2
 EOF
   fi
+  return 0
 }
 
 apply_netplan_override() {
@@ -404,6 +423,7 @@ apply_netplan_override() {
     restore_from_latest_or_remove "$np" || true
     netplan apply >/dev/null 2>&1 || true
   fi
+  return 0
 }
 
 # ============================================================
@@ -459,6 +479,7 @@ fs.file-max=2097152
 EOF
 
   sysctl --system >/dev/null || true
+  return 0
 }
 
 # ============================================================
@@ -477,6 +498,7 @@ EOF
   sed -i '/DefaultLimitNOFILE/d' /etc/systemd/system.conf
   echo "DefaultLimitNOFILE=500000" >> /etc/systemd/system.conf
   systemctl daemon-reexec >/dev/null 2>&1 || true
+  return 0
 }
 
 # ============================================================
@@ -548,6 +570,7 @@ persist_mtu_netplan() {
     restore_from_latest_or_remove "$np" || true
     netplan apply >/dev/null 2>&1 || true
   fi
+  return 0
 }
 
 optimize_mtu() {
@@ -587,6 +610,7 @@ optimize_mtu() {
   else
     apply_mtu_runtime "$iface" "$old" || true
   fi
+  return 0
 }
 
 # ============================================================
@@ -594,12 +618,11 @@ optimize_mtu() {
 # ============================================================
 setup_irqbalance() {
   [[ "$ENABLE_IRQBALANCE" -eq 1 ]] || return 0
-
   if ! command -v irqbalance >/dev/null 2>&1; then
     install_pkg irqbalance || return 0
   fi
-
   systemctl enable --now irqbalance >/dev/null 2>&1 || true
+  return 0
 }
 
 # ============================================================
@@ -649,7 +672,6 @@ tune_ethtool_ring_for_iface() {
 
 setup_ethtool_ring() {
   [[ "$ENABLE_ETHTOOL_RING" -eq 1 ]] || return 0
-
   if ! command -v ethtool >/dev/null 2>&1; then
     install_pkg ethtool || return 0
   fi
@@ -665,6 +687,7 @@ setup_ethtool_ring() {
   for i in $ifaces; do
     tune_ethtool_ring_for_iface "$i"
   done
+  return 0
 }
 
 # ============================================================
@@ -687,6 +710,7 @@ setup_swap() {
   mkswap /swapfile >/dev/null
   swapon /swapfile
   grep -qE '^\s*/swapfile\s' /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+  return 0
 }
 
 # ============================================================
@@ -710,6 +734,7 @@ setup_ufw() {
 
   ufw --force enable >/dev/null || true
   ufw status verbose || true
+  return 0
 }
 
 # ============================================================
@@ -761,7 +786,6 @@ show_dns_status() {
     ' | sed 's/^[ \t]*//')"
     [[ -n "${global_dns:-}" ]] && subkv "Global DNS" "$global_dns"
 
-    # Show per-link if possible
     local link_dns
     link_dns="$(resolvectl status 2>/dev/null | awk '
       /Link [0-9]+ \(/ {link=$0}
@@ -777,6 +801,8 @@ show_dns_status() {
     rc="$(grep -E '^\s*nameserver\s+' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | xargs || true)"
     [[ -n "${rc:-}" ]] && subkv "/etc/resolv.conf" "$rc"
   fi
+
+  subkv "Selected DNS" "${DNS1}/${DNS2}"
 }
 
 show_bbr_status() {
@@ -792,8 +818,6 @@ show_bbr_status() {
   fi
   subkv "Qdisc" "$qdisc"
   [[ -n "${avail:-}" ]] && subkv "Available" "$avail"
-
-  # bbr2 availability hint
   if echo "$avail" | grep -qw bbr2; then
     subkv "Hint" "BBR2 is available (optional)"
   fi
@@ -821,7 +845,6 @@ show_status() {
   clear
   title_box "${ICON_LIST} وضعیت سیستم (System Status)"
 
-  # OS / Kernel / Uptime
   kv "${ICON_OS} OS" "$OS_NAME"
   kv "Kernel" "$KERNEL_FULL"
   kv "${ICON_TIME} Uptime" "$(uptime -p 2>/dev/null || uptime)"
@@ -831,7 +854,6 @@ show_status() {
   fi
   hr
 
-  # CPU / RAM
   kv "${ICON_CPU} CPU Model" "$(get_cpu_model 2>/dev/null || echo N/A)"
   kv "CPU Cores" "$(nproc 2>/dev/null || echo N/A)"
   kv "Load Avg" "$(awk '{print $1" "$2" "$3}' /proc/loadavg 2>/dev/null || echo N/A)"
@@ -840,7 +862,6 @@ show_status() {
   kv "Swap" "$(free -h 2>/dev/null | awk '/Swap:/ {print $3" / "$2" used"}' || echo N/A)"
   hr
 
-  # Network basics
   kv "${ICON_NET} Default IF" "${DEFAULT_IFACE:-unknown}"
   if [[ -n "${DEFAULT_IFACE:-}" ]]; then
     kv "${ICON_MTU} MTU" "$(get_iface_mtu "$DEFAULT_IFACE" 2>/dev/null || echo N/A)"
@@ -851,26 +872,21 @@ show_status() {
     [[ -n "${v6:-}" ]] && kv "IPv6 (IF)" "$v6" || kv "IPv6 (IF)" "N/A"
   fi
 
-  # Public IP best-effort
   local pub4 pub6
   pub4="$(get_public_ip_best_effort -4)"
   pub6="$(get_public_ip_best_effort -6)"
   kv "Public IPv4" "$pub4"
   kv "Public IPv6" "$pub6"
-
   hr
 
-  # DNS
   echo -e "${BOLD}${CYAN}${ICON_DNS} DNS Status${NC}"
   show_dns_status
   hr
 
-  # BBR / Qdisc
   echo -e "${BOLD}${CYAN}📈 TCP / BBR Status${NC}"
   show_bbr_status
   hr
 
-  # irqbalance
   echo -e "${BOLD}${CYAN}⚙️ CPU / IRQ${NC}"
   if systemctl is-active --quiet irqbalance 2>/dev/null; then
     subkv "irqbalance" "${GREEN}active${NC}"
@@ -878,20 +894,17 @@ show_status() {
     subkv "irqbalance" "${YELLOW}inactive/not installed${NC}"
   fi
 
-  # conntrack
   local ct_count ct_max
   ct_count="$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo N/A)"
   ct_max="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo N/A)"
   subkv "Conntrack" "count=$ct_count  max=$ct_max"
 
-  # ring buffers
   if [[ -n "${DEFAULT_IFACE:-}" ]]; then
     show_ring_status "$DEFAULT_IFACE"
   fi
 
   hr
 
-  # Disk
   echo -e "${BOLD}${CYAN}${ICON_DISK} Disk${NC}"
   df -h / 2>/dev/null | awk 'NR==1{print;next}{print}' | sed "s/^/${GRAY}/;s/$/${NC}/" || true
   hr
@@ -903,10 +916,8 @@ show_status() {
 # OPTIMIZE FLOW with PROGRESS
 # ============================================================
 run_step() {
-  # run_step step_number total_steps "Title" function_name
   local idx="$1" total="$2" title="$3" fn="$4"
   local pct=$(( idx * 100 / total ))
-
   progress_bar "$pct" "$title"
   echo -ne "\n${ICON_RUN} ${CYAN}${title}${NC} ... "
   if "$fn"; then
@@ -921,7 +932,7 @@ optimize_server() {
   clear
   title_box "${ICON_ROCKET} اجرای بهینه‌سازی (Optimize Server)"
 
-  echo -e "${GRAY}${ICON_INFO} این عملیات تنظیمات شبکه/سیستم را برای VPN (Xray Reality + Hysteria2) انجام می‌دهد.${NC}"
+  echo -e "${GRAY}${ICON_INFO} این عملیات تنظیمات شبکه/سیستم را برای VPN انجام می‌دهد.${NC}"
   echo -e "${GRAY}${ICON_INFO} Backup ها در: ${BOLD}$BACKUP_DIR${NC}"
   hr
 
@@ -973,8 +984,9 @@ quick_summary_line() {
   local cc qdisc dns_hint
   cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
   qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
-  dns_hint="$DNS1/$DNS2"
-  echo -e "${GRAY}${ICON_INFO} cc:${NC} ${BOLD}${cc}${NC}  ${GRAY}| qdisc:${NC} ${BOLD}${qdisc}${NC}  ${GRAY}| IF:${NC} ${BOLD}${DEFAULT_IFACE:-?}${NC}"
+  # ---- IMPORTANT FIX: safe expansion ----
+  dns_hint="${DNS1:-1.1.1.1}/${DNS2:-1.0.0.1}"
+  echo -e "${GRAY}${ICON_INFO} cc:${NC} ${BOLD}${cc}${NC}  ${GRAY}| qdisc:${NC} ${BOLD}${qdisc}${NC}  ${GRAY}| DNS:${NC} ${BOLD}${dns_hint}${NC}  ${GRAY}| IF:${NC} ${BOLD}${DEFAULT_IFACE:-?}${NC}"
 }
 
 while true; do
