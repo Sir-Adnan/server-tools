@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================
-# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V14.3.3)
+# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V14.4.0)
 # Targets: Xray (TCP/Reality/WS/gRPC) + Hysteria2 (UDP/QUIC)
-# UI: Fancy Menus, Progress Display, Rich System Status
+# UI: ASCII-only (no unicode/emoji/box-drawing) for clean terminals
 # Fix: DNS1/DNS2 unbound variable
 # Fix: Safe logging if /var/log not writable and/or tee missing
-# Fix: No dependency on seq for progress bar
-# Fix: HR line UTF-8 fallback
+# Fix: No dependency on seq
 #
 # Creator : UnknownZero
 # Telegram ID : @UnknownZero
@@ -19,7 +18,7 @@ IFS=$'\n\t'
 # GLOBAL CONFIG
 # =========================
 SCRIPT_NAME="vpn_optimizer"
-VERSION="V14.3.3"
+VERSION="V14.4.0"
 
 LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 LOG_MAX_SIZE=$((5 * 1024 * 1024))     # 5MB
@@ -58,38 +57,17 @@ DNS1="${DNS1:-1.1.1.1}"
 DNS2="${DNS2:-1.0.0.1}"
 
 # =========================
-# COLORS / UI (softer cyan)
+# COLORS (no bright cyan)
 # =========================
-RED='\033[38;5;196m'
-GREEN='\033[38;5;46m'
-YELLOW='\033[38;5;226m'
-BLUE='\033[38;5;33m'
-TEAL='\033[38;5;44m'     # softer than bright cyan
-PURPLE='\033[38;5;141m'
-GRAY='\033[38;5;245m'
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+GRAY='\033[0;90m'
 BOLD='\033[1m'
 DIM='\033[2m'
 NC='\033[0m'
-
-# Icons
-ICON_OK="✅"
-ICON_RUN="⏳"
-ICON_WARN="⚠️"
-ICON_FAIL="❌"
-ICON_INFO="ℹ️"
-ICON_NET="🌐"
-ICON_CPU="🧠"
-ICON_RAM="💾"
-ICON_DISK="🗄️"
-ICON_OS="🖥️"
-ICON_TIME="⏱️"
-ICON_LOCK="🔐"
-ICON_WRENCH="🛠️"
-ICON_ROCKET="🚀"
-ICON_REDO="🔄"
-ICON_LIST="📊"
-ICON_DNS="📡"
-ICON_MTU="📏"
 
 # =========================
 # ROOT CHECK
@@ -100,7 +78,7 @@ if [[ ${EUID:-9999} -ne 0 ]]; then
 fi
 
 # =========================
-# LOG FILE FALLBACK (if /var/log not writable)
+# LOG FILE FALLBACK
 # =========================
 if ! ( touch "$LOG_FILE" 2>/dev/null ); then
   LOG_FILE="/tmp/${SCRIPT_NAME}.log"
@@ -108,7 +86,7 @@ if ! ( touch "$LOG_FILE" 2>/dev/null ); then
 fi
 
 # =========================
-# LOGGING & ROTATION (fail-safe)
+# LOG ROTATION (fail-safe)
 # =========================
 rotate_logs() {
   [[ -f "$LOG_FILE" ]] || return 0
@@ -166,49 +144,11 @@ restore_from_latest_or_remove() {
 }
 
 # =========================
-# UI HELPERS
+# UI HELPERS (ASCII ONLY)
 # =========================
 term_cols() { tput cols 2>/dev/null || echo 80; }
 
-hr() {
-  local c; c="$(term_cols)"
-  local ch="━"
-  if command -v locale >/dev/null 2>&1; then
-    if [[ "$(locale charmap 2>/dev/null || true)" != "UTF-8" ]]; then
-      ch="-"
-    fi
-  fi
-  printf "${GRAY}%*s${NC}\n" "$c" "" | tr ' ' "$ch"
-}
-
-title_box() {
-  local text="$1"
-  hr
-  echo -e "${BOLD}${TEAL}$text${NC}"
-  hr
-}
-
-kv() {
-  local k="$1" v="$2"
-  printf "${BLUE}%-20s${NC} ${BOLD}%s${NC}\n" "$k" "$v"
-}
-
-subkv() {
-  local k="$1" v="$2"
-  printf "${GRAY}  %-18s${NC} %s\n" "$k" "$v"
-}
-
-pause() {
-  # If stdin is not a TTY (rare but possible), do not block forever.
-  if [[ -t 0 ]]; then
-    read -rp "$(echo -e "${GRAY}Press Enter...${NC}")"
-  else
-    sleep 1
-  fi
-}
-
 repeat_char() {
-  # pure bash: repeat_char <char> <count>
   local ch="$1" n="$2"
   local out=""
   while (( n > 0 )); do
@@ -218,24 +158,58 @@ repeat_char() {
   printf "%s" "$out"
 }
 
+hr() {
+  local c; c="$(term_cols)"
+  echo -e "${GRAY}$(repeat_char "=" "$c")${NC}"
+}
+
+hr2() {
+  local c; c="$(term_cols)"
+  echo -e "${GRAY}$(repeat_char "-" "$c")${NC}"
+}
+
+title_box() {
+  local text="$1"
+  hr
+  echo -e "${BOLD}${GREEN}${text}${NC}"
+  hr
+}
+
+kv() {
+  local k="$1" v="$2"
+  printf "${BLUE}%-18s${NC} ${BOLD}%s${NC}\n" "$k" "$v"
+}
+
+subkv() {
+  local k="$1" v="$2"
+  printf "${GRAY}  %-16s${NC} %s\n" "$k" "$v"
+}
+
+pause() {
+  if [[ -t 0 ]]; then
+    read -rp "$(echo -e "${GRAY}Press Enter...${NC}")"
+  else
+    sleep 1
+  fi
+}
+
 progress_bar() {
   local p="$1" msg="$2"
-  local width=30
+  local width=32
   local filled=$((p * width / 100))
   local empty=$((width - filled))
   local bar
-  bar="$(repeat_char "█" "$filled")"
-  bar+="${DIM}$(repeat_char "░" "$empty")${NC}"
-  printf "\r${PURPLE}${BOLD}[%3s%%]${NC} ${GREEN}%s${NC} ${GRAY}%s${NC}   " "$p" "$bar" "$msg"
+  bar="$(repeat_char "#" "$filled")$(repeat_char "." "$empty")"
+  printf "\r${MAGENTA}${BOLD}[%3s%%]${NC} ${GREEN}[${bar}]${NC} ${GRAY}%s${NC}   " "$p" "$msg"
 }
 
 on_error() {
   local line="$1" cmd="$2"
   echo
-  echo -e "${RED}${ICON_FAIL} Script error.${NC}"
+  echo -e "${RED}ERROR: Script failed.${NC}"
   echo -e "${YELLOW}Line:${NC} $line"
   echo -e "${YELLOW}Cmd :${NC} $cmd"
-  echo -e "${GRAY}Log:${NC} $LOG_FILE"
+  echo -e "${GRAY}Log :${NC} $LOG_FILE"
   echo
   pause
 }
@@ -372,15 +346,15 @@ check_kernel_bbr() {
 # ============================================================
 select_dns() {
   clear
-  title_box "${ICON_DNS} Select DNS Provider"
-  echo -e "${TEAL}1) Cloudflare${NC}   ${GRAY}(1.1.1.1 / 1.0.0.1)${NC}"
-  echo -e "${TEAL}2) Google${NC}       ${GRAY}(8.8.8.8 / 8.8.4.4)${NC}"
-  echo -e "${TEAL}3) Quad9${NC}        ${GRAY}(9.9.9.9 / 149.112.112.112)${NC}"
-  echo -e "${TEAL}4) OpenDNS${NC}      ${GRAY}(208.67.222.222 / 208.67.220.220)${NC}"
-  echo -e "${TEAL}5) Shecan${NC}       ${GRAY}(178.22.122.100 / 185.51.200.2)${NC}"
-  echo -e "${TEAL}6) Custom${NC}"
-  hr
-  read -rp "➤ Choice: " d
+  title_box "DNS Provider Selection"
+  echo -e "${BOLD}1)${NC} Cloudflare  (1.1.1.1 / 1.0.0.1)"
+  echo -e "${BOLD}2)${NC} Google      (8.8.8.8 / 8.8.4.4)"
+  echo -e "${BOLD}3)${NC} Quad9       (9.9.9.9 / 149.112.112.112)"
+  echo -e "${BOLD}4)${NC} OpenDNS     (208.67.222.222 / 208.67.220.220)"
+  echo -e "${BOLD}5)${NC} Shecan      (178.22.122.100 / 185.51.200.2)"
+  echo -e "${BOLD}6)${NC} Custom"
+  hr2
+  read -rp "Choice: " d
 
   case "${d:-}" in
     1) DNS1=1.1.1.1; DNS2=1.0.0.1 ;;
@@ -770,7 +744,7 @@ setup_ufw() {
   ufw default deny incoming >/dev/null 2>&1 || true
   ufw default allow outgoing >/dev/null 2>&1 || true
 
-  read -rp "Extra allowed ports (space separated, e.g. 80/tcp 443/tcp 51820/udp) [empty=none]: " ports
+  read -rp "Extra allowed ports (e.g. 80/tcp 443/tcp 51820/udp) [empty=none]: " ports
   if [[ -n "${ports:-}" ]]; then
     for p in $ports; do ufw allow "$p" >/dev/null 2>&1 || true; done
   fi
@@ -802,172 +776,114 @@ restore_defaults() {
   systemctl restart systemd-resolved >/dev/null 2>&1 || true
   ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf >/dev/null 2>&1 || true
 
-  echo -e "${GREEN}${ICON_OK} Rollback complete.${NC}"
+  echo -e "${GREEN}OK: Rollback complete.${NC}"
   pause
   return 0
 }
 
 # ============================================================
-# RICH STATUS SCREEN
+# STATUS
 # ============================================================
 get_cpu_model() { awk -F: '/model name/ {print $2; exit}' /proc/cpuinfo 2>/dev/null | sed 's/^[ \t]*//'; }
 
 get_public_ip_best_effort() {
-  local proto="$1" # -4 or -6
+  local proto="$1"
   command -v curl >/dev/null 2>&1 || { echo "N/A"; return; }
   curl -sS --max-time 2 "$proto" https://api.ipify.org 2>/dev/null || echo "N/A"
 }
 
-show_dns_status() {
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    echo -e "${GRAY}${ICON_DNS} systemd-resolved: active${NC}"
-    local global_dns
-    global_dns="$(resolvectl status 2>/dev/null | awk '
-      /^Global/ {g=1}
-      g && /DNS Servers:/ {sub("DNS Servers:",""); print; exit}
-    ' | sed 's/^[ \t]*//')"
-    [[ -n "${global_dns:-}" ]] && subkv "Global DNS" "$global_dns"
-  else
-    echo -e "${GRAY}${ICON_DNS} systemd-resolved: inactive${NC}"
-  fi
-
-  if [[ -f /etc/resolv.conf ]]; then
-    local rc
-    rc="$(grep -E '^\s*nameserver\s+' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | xargs || true)"
-    [[ -n "${rc:-}" ]] && subkv "/etc/resolv.conf" "$rc"
-  fi
-
-  subkv "Selected DNS" "${DNS1}/${DNS2}"
-}
-
-show_bbr_status() {
-  local cc avail qdisc
-  cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")"
-  avail="$(sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | sed 's/.*=//;s/^[ \t]*//')"
-  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "unknown")"
-
-  if [[ "$cc" == "bbr" ]]; then
-    subkv "Congestion" "${GREEN}bbr (enabled)${NC}"
-  else
-    subkv "Congestion" "${YELLOW}${cc}${NC}"
-  fi
-  subkv "Qdisc" "$qdisc"
-  [[ -n "${avail:-}" ]] && subkv "Available" "$avail"
-}
-
-show_ring_status() {
-  local iface="$1"
-  command -v ethtool >/dev/null 2>&1 || { subkv "Ring buffers" "ethtool not installed"; return; }
-
-  local out
-  out="$(ethtool -g "$iface" 2>/dev/null || true)"
-  [[ -n "${out:-}" ]] || { subkv "Ring buffers" "Not supported on this NIC"; return; }
-
-  local max_rx max_tx cur_rx cur_tx
-  max_rx="$(awk 'BEGIN{inmax=0} /^Pre-set maximums:/{inmax=1;next} /^Current hardware settings:/{inmax=0} inmax && $1=="RX:"{print $2;exit}' <<<"$out" 2>/dev/null || true)"
-  max_tx="$(awk 'BEGIN{inmax=0} /^Pre-set maximums:/{inmax=1;next} /^Current hardware settings:/{inmax=0} inmax && $1=="TX:"{print $2;exit}' <<<"$out" 2>/dev/null || true)"
-  cur_rx="$(awk 'BEGIN{incur=0} /^Current hardware settings:/{incur=1;next} incur && $1=="RX:"{print $2;exit}' <<<"$out" 2>/dev/null || true)"
-  cur_tx="$(awk 'BEGIN{incur=0} /^Current hardware settings:/{incur=1;next} incur && $1=="TX:"{print $2;exit}' <<<"$out" 2>/dev/null || true)"
-
-  [[ -n "${cur_rx:-}" && -n "${cur_tx:-}" ]] && subkv "Ring current" "RX=$cur_rx  TX=$cur_tx"
-  [[ -n "${max_rx:-}" && -n "${max_tx:-}" ]] && subkv "Ring max"     "RX=$max_rx  TX=$max_tx"
+show_bbr_status_line() {
+  local cc qdisc
+  cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
+  qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
+  echo "cc=${cc}  qdisc=${qdisc}"
 }
 
 show_status() {
   clear
-  title_box "${ICON_LIST} System Status"
+  title_box "System Status"
 
-  kv "${ICON_OS} OS" "$OS_NAME"
+  kv "OS" "$OS_NAME"
   kv "Kernel" "$KERNEL_FULL"
-  kv "${ICON_TIME} Uptime" "$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "N/A")"
+  kv "Uptime" "$(uptime -p 2>/dev/null || uptime 2>/dev/null || echo "N/A")"
   kv "Hostname" "$(hostname 2>/dev/null || echo "N/A")"
-  if command -v systemd-detect-virt >/dev/null 2>&1; then
-    kv "Virtualization" "$(systemd-detect-virt 2>/dev/null || echo "unknown")"
-  fi
-  hr
+  hr2
 
-  kv "${ICON_CPU} CPU Model" "$(get_cpu_model 2>/dev/null || echo "N/A")"
+  kv "CPU Model" "$(get_cpu_model 2>/dev/null || echo "N/A")"
   kv "CPU Cores" "$(nproc 2>/dev/null || echo "N/A")"
   kv "Load Avg" "$(awk '{print $1" "$2" "$3}' /proc/loadavg 2>/dev/null || echo "N/A")"
-  echo
-  kv "${ICON_RAM} Memory" "$(free -h 2>/dev/null | awk '/Mem:/ {print $3" / "$2" used"}' || echo "N/A")"
-  kv "Swap" "$(free -h 2>/dev/null | awk '/Swap:/ {print $3" / "$2" used"}' || echo "N/A")"
-  hr
+  hr2
 
-  kv "${ICON_NET} Default IF" "${DEFAULT_IFACE:-unknown}"
+  kv "Memory" "$(free -h 2>/dev/null | awk '/Mem:/ {print $3" / "$2" used"}' || echo "N/A")"
+  kv "Swap" "$(free -h 2>/dev/null | awk '/Swap:/ {print $3" / "$2" used"}' || echo "N/A")"
+  hr2
+
+  kv "Default IF" "${DEFAULT_IFACE:-unknown}"
   if [[ -n "${DEFAULT_IFACE:-}" ]]; then
-    kv "${ICON_MTU} MTU" "$(get_iface_mtu "$DEFAULT_IFACE" 2>/dev/null || echo "N/A")"
+    kv "MTU" "$(get_iface_mtu "$DEFAULT_IFACE" 2>/dev/null || echo "N/A")"
     local v4 v6
     v4="$(ip -4 addr show dev "$DEFAULT_IFACE" 2>/dev/null | awk '/inet /{print $2}' | xargs || true)"
     v6="$(ip -6 addr show dev "$DEFAULT_IFACE" 2>/dev/null | awk '/inet6 / && $2 !~ /^fe80/ {print $2}' | xargs || true)"
-    [[ -n "${v4:-}" ]] && kv "IPv4 (IF)" "$v4" || kv "IPv4 (IF)" "N/A"
-    [[ -n "${v6:-}" ]] && kv "IPv6 (IF)" "$v6" || kv "IPv6 (IF)" "N/A"
+    kv "IPv4 (IF)" "${v4:-N/A}"
+    kv "IPv6 (IF)" "${v6:-N/A}"
   fi
-
   kv "Public IPv4" "$(get_public_ip_best_effort -4)"
   kv "Public IPv6" "$(get_public_ip_best_effort -6)"
-  hr
+  hr2
 
-  echo -e "${BOLD}${TEAL}${ICON_DNS} DNS Status${NC}"
-  show_dns_status
-  hr
-
-  echo -e "${BOLD}${TEAL}📈 TCP / BBR Status${NC}"
-  show_bbr_status
-  hr
-
-  echo -e "${BOLD}${TEAL}⚙️ CPU / IRQ${NC}"
-  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet irqbalance 2>/dev/null; then
-    subkv "irqbalance" "${GREEN}active${NC}"
+  kv "DNS (selected)" "${DNS1}/${DNS2}"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    subkv "resolved" "active"
   else
-    subkv "irqbalance" "${YELLOW}inactive/not installed${NC}"
+    subkv "resolved" "inactive"
   fi
-
-  local ct_count ct_max
-  ct_count="$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo "N/A")"
-  ct_max="$(cat /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || echo "N/A")"
-  subkv "Conntrack" "count=$ct_count  max=$ct_max"
-
-  if [[ -n "${DEFAULT_IFACE:-}" ]]; then
-    show_ring_status "$DEFAULT_IFACE"
+  if [[ -f /etc/resolv.conf ]]; then
+    subkv "resolv.conf" "$(grep -E '^\s*nameserver\s+' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | xargs || true)"
   fi
+  hr2
 
+  kv "TCP" "$(show_bbr_status_line)"
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet irqbalance 2>/dev/null; then
+    kv "irqbalance" "active"
+  else
+    kv "irqbalance" "inactive/not installed"
+  fi
+  hr2
+
+  kv "Disk /" "$(df -h / 2>/dev/null | awk 'NR==2{print $3" used of "$2" ("$5")"}' || echo "N/A")"
   hr
-  echo -e "${BOLD}${TEAL}${ICON_DISK} Disk${NC}"
-  df -h / 2>/dev/null || true
-  hr
+
   pause
 }
 
 # ============================================================
-# OPTIMIZE FLOW with PROGRESS
+# OPTIMIZE FLOW
 # ============================================================
 run_step() {
   local idx="$1" total="$2" title="$3" fn="$4"
   local pct=$(( idx * 100 / total ))
   progress_bar "$pct" "$title"
-  echo -ne "\n${ICON_RUN} ${TEAL}${title}${NC} ... "
+  echo -ne "\n${DIM}${title}${NC} ... "
   if "$fn"; then
-    echo -e "${GREEN}${ICON_OK}${NC}"
+    echo -e "${GREEN}OK${NC}"
   else
-    echo -e "${RED}${ICON_FAIL}${NC}"
+    echo -e "${RED}FAIL${NC}"
     return 1
   fi
 }
 
 optimize_server() {
   clear
-  title_box "${ICON_ROCKET} Run Optimization"
+  title_box "Run Optimization"
 
-  echo -e "${GRAY}${ICON_INFO} This will apply system/network tuning for VPN workloads.${NC}"
-  echo -e "${GRAY}${ICON_INFO} Backups: ${BOLD}$BACKUP_DIR${NC}"
-  echo -e "${GRAY}${ICON_INFO} Log: ${BOLD}$LOG_FILE${NC}"
-  hr
+  echo -e "${GRAY}Backups: ${NC}${BOLD}$BACKUP_DIR${NC}"
+  echo -e "${GRAY}Log    : ${NC}${BOLD}$LOG_FILE${NC}"
+  hr2
 
   select_dns
 
   clear
-  title_box "${ICON_ROCKET} Running..."
+  title_box "Applying Changes"
 
   local total=9
   local step=0
@@ -985,96 +901,96 @@ optimize_server() {
   progress_bar 100 "Done"
   echo
   hr
-  echo -e "${GREEN}${ICON_OK} Optimization completed successfully.${NC}"
-  echo -e "${GRAY}${ICON_INFO} Backups: ${BOLD}$BACKUP_DIR${NC}  ${GRAY}(latest -> ${BOLD}$BACKUP_LATEST_LINK${NC}${GRAY})${NC}"
-  echo -e "${GRAY}${ICON_INFO} Log: ${BOLD}$LOG_FILE${NC}"
+  echo -e "${GREEN}DONE: Optimization completed successfully.${NC}"
+  echo -e "${GRAY}Backups: ${NC}${BOLD}$BACKUP_DIR${NC}${GRAY} (latest -> ${BOLD}$BACKUP_LATEST_LINK${NC}${GRAY})${NC}"
+  echo -e "${GRAY}Log: ${NC}${BOLD}$LOG_FILE${NC}"
   hr
+
   pause
 }
 
 # ============================================================
-# MENU UI
+# BANNER / MENU
 # ============================================================
 print_banner() {
-  echo -e "${PURPLE}${BOLD}"
+  echo -e "${MAGENTA}${BOLD}"
   cat <<'EOF'
-██╗   ██╗██████╗ ███╗   ██╗
-██║   ██║██╔══██╗████╗  ██║
-██║   ██║██████╔╝██╔██╗ ██║
-╚██╗ ██╔╝██╔═══╝ ██║╚██╗██║
- ╚████╔╝ ██║     ██║ ╚████║
-  ╚═══╝  ╚═╝     ╚═╝  ╚═══╝
+ _    _  ____  _   _
+| |  | |/ __ \| \ | |
+| |  | | |  | |  \| |
+| |  | | |  | | . ` |
+| |__| | |__| | |\  |
+ \____/ \____/|_| \_|
 EOF
   echo -e "${NC}"
 }
 
-quick_summary_line() {
-  local cc qdisc dns_hint
+summary_line() {
+  local cc qdisc
   cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
   qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
-  dns_hint="${DNS1:-1.1.1.1}/${DNS2:-1.0.0.1}"   # safe expansion
-  echo -e "${GRAY}${ICON_INFO} cc:${NC} ${BOLD}${cc}${NC}  ${GRAY}| qdisc:${NC} ${BOLD}${qdisc}${NC}  ${GRAY}| DNS:${NC} ${BOLD}${dns_hint}${NC}  ${GRAY}| IF:${NC} ${BOLD}${DEFAULT_IFACE:-?}${NC}"
+  echo -e "${GRAY}cc=${cc}  qdisc=${qdisc}  DNS=${DNS1}/${DNS2}  IF=${DEFAULT_IFACE:-?}${NC}"
 }
 
 while true; do
   clear
   print_banner
 
-  echo -e "${BOLD}${TEAL} VPN SERVER OPTIMIZER — ${VERSION}${NC}   ${GRAY}(Xray Reality + Hysteria2)${NC}"
-  hr
-  kv "${ICON_OS} OS" "$OS_NAME"
+  echo -e "${BOLD}${GREEN}VPN SERVER OPTIMIZER - ${VERSION}${NC}  ${GRAY}(Xray Reality + Hysteria2)${NC}"
+  hr2
+  kv "OS" "$OS_NAME"
   kv "Kernel" "$KERNEL_BASE"
-  kv "${ICON_RAM} RAM" "${RAM_MB} MB"
-  kv "${ICON_NET} Interfaces" "$(echo "${PHY_INTERFACES:-}" | tr '\n' ' ' | xargs)"
-  hr
-  quick_summary_line
+  kv "RAM" "${RAM_MB} MB"
+  kv "Interfaces" "$(echo "${PHY_INTERFACES:-}" | tr '\n' ' ' | xargs)"
+  hr2
+  summary_line
   hr
 
-  echo -e " ${GREEN}${ICON_ROCKET} [1]${NC} Optimize Server (Safe Apply)"
-  echo -e " ${TEAL}${ICON_LIST} [2]${NC} System Status (Detailed)"
-  echo -e " ${YELLOW}${ICON_REDO} [3]${NC} Rollback (latest backup)"
-  echo -e " ${BLUE}${ICON_WRENCH} [4]${NC} Enable irqbalance"
-  echo -e " ${BLUE}🔧 [5]${NC} Tune ring buffers (ethtool)"
+  echo -e "${BOLD}[1]${NC} Optimize Server (Safe Apply)"
+  echo -e "${BOLD}[2]${NC} System Status (Detailed)"
+  echo -e "${BOLD}[3]${NC} Rollback (latest backup)"
+  echo -e "${BOLD}[4]${NC} Enable irqbalance"
+  echo -e "${BOLD}[5]${NC} Tune ring buffers (ethtool)"
   if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
-    echo -e " ${PURPLE}${ICON_LOCK} [6]${NC} Setup Firewall (UFW)"
-    echo -e " ${PURPLE}${ICON_REDO} [7]${NC} Reboot Server"
-    echo -e " ${RED}❌ [0]${NC} Exit"
+    echo -e "${BOLD}[6]${NC} Setup Firewall (UFW)"
+    echo -e "${BOLD}[7]${NC} Reboot Server"
+    echo -e "${BOLD}[0]${NC} Exit"
   else
-    echo -e " ${PURPLE}${ICON_REDO} [6]${NC} Reboot Server"
-    echo -e " ${RED}❌ [0]${NC} Exit"
+    echo -e "${BOLD}[6]${NC} Reboot Server"
+    echo -e "${BOLD}[0]${NC} Exit"
   fi
 
   hr
-  echo -e " ${GRAY}Creator:${NC} ${BOLD}UnknownZero${NC}   ${GRAY}Telegram ID:${NC} ${TEAL}@UnknownZero${NC}"
-  hr
+  echo -e "${GRAY}Creator: UnknownZero  Telegram ID: @UnknownZero${NC}"
+  hr2
 
-  read -rp "➤ Select: " opt
+  read -rp "Select: " opt
 
   case "${opt:-}" in
     1) optimize_server ;;
     2) show_status ;;
     3) restore_defaults ;;
     4)
-      title_box "⚙️ Enable irqbalance"
+      title_box "Enable irqbalance"
       setup_irqbalance
       if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet irqbalance 2>/dev/null; then
-        echo -e "${GREEN}${ICON_OK} irqbalance is active.${NC}"
+        echo -e "${GREEN}OK: irqbalance is active.${NC}"
       else
-        echo -e "${YELLOW}${ICON_WARN} irqbalance is not active (some VMs have limited IRQ behavior).${NC}"
+        echo -e "${YELLOW}WARN: irqbalance is not active (some VMs have limited IRQ behavior).${NC}"
       fi
       hr
       pause
       ;;
     5)
-      title_box "🔧 Tune ring buffers"
+      title_box "Tune ring buffers (ethtool)"
       setup_ethtool_ring
-      echo -e "${GREEN}${ICON_OK} Ring tuning attempted (best effort).${NC}"
+      echo -e "${GREEN}OK: Ring tuning attempted (best effort).${NC}"
       hr
       pause
       ;;
     6)
       if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
-        title_box "${ICON_LOCK} UFW Firewall"
+        title_box "UFW Firewall"
         setup_ufw
         pause
       else
@@ -1085,11 +1001,11 @@ while true; do
       if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
         reboot
       else
-        echo -e "${RED}${ICON_FAIL} Invalid option.${NC}"
+        echo -e "${RED}Invalid option.${NC}"
         sleep 1
       fi
       ;;
     0) exit ;;
-    *) echo -e "${RED}${ICON_FAIL} Invalid option.${NC}"; sleep 1 ;;
+    *) echo -e "${RED}Invalid option.${NC}"; sleep 1 ;;
   esac
 done
