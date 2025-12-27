@@ -1,8 +1,8 @@
 #!/bin/bash
 # ============================================================
-# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V14.3.1)
+# VPN SERVER OPTIMIZER — ENTERPRISE INFRA EDITION (V14.3.2)
 # Targets: Xray (TCP/Reality/WS/gRPC) + Hysteria2 (UDP/QUIC)
-# UI Upgrade: Fancy Menus, Progress Display, Rich System Status
+# UI: Fancy Menus, Progress Display, Rich System Status
 # Fix: DNS1/DNS2 unbound variable (safe defaults + safe expansion)
 # Fix: HR line UTF-8 fallback (avoids "��������" on non-UTF8 terminals)
 #
@@ -17,7 +17,7 @@ IFS=$'\n\t'
 # GLOBAL CONFIG
 # =========================
 SCRIPT_NAME="vpn_optimizer"
-VERSION="V14.3.1"
+VERSION="V14.3.2"
 
 LOG_FILE="/var/log/${SCRIPT_NAME}.log"
 LOG_MAX_SIZE=$((5 * 1024 * 1024))     # 5MB
@@ -51,7 +51,7 @@ MTU_HEADROOM=8
 # Ethtool ring desired ceiling (we will not force above NIC max)
 RING_DESIRED=4096
 
-# ---- IMPORTANT FIX: DNS defaults (avoid set -u crash) ----
+# ---- IMPORTANT: DNS defaults (avoid set -u crash) ----
 DNS1="${DNS1:-1.1.1.1}"
 DNS2="${DNS2:-1.0.0.1}"
 
@@ -93,7 +93,7 @@ ICON_MTU="📏"
 # ROOT CHECK
 # =========================
 if [[ $EUID -ne 0 ]]; then
-  echo -e "${RED}This script must be run as root${NC}"
+  echo -e "${RED}This script must be run as root.${NC}"
   exit 1
 fi
 
@@ -189,7 +189,7 @@ progress_bar() {
 on_error() {
   local line="$1" cmd="$2"
   echo
-  echo -e "${RED}${ICON_FAIL} خطا در اجرای اسکریپت${NC}"
+  echo -e "${RED}${ICON_FAIL} Script error.${NC}"
   echo -e "${YELLOW}Line:${NC} $line"
   echo -e "${YELLOW}Cmd :${NC} $cmd"
   echo -e "${GRAY}Log:${NC} $LOG_FILE"
@@ -299,7 +299,7 @@ check_kernel_bbr() {
   fi
 
   if (( kernel_ok != 0 )); then
-    log "Kernel < 4.9 — BBR not supported, using cubic"
+    log "Kernel < 4.9 — BBR not supported, using cubic."
     BBR_ALGO="cubic"
     QDISC="fq_codel"
     return 0
@@ -309,11 +309,11 @@ check_kernel_bbr() {
   if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -qw bbr; then
     BBR_ALGO="bbr"
     QDISC="fq"
-    log "BBR supported and will be enabled"
+    log "BBR is available and will be enabled."
   else
     BBR_ALGO="cubic"
     QDISC="fq_codel"
-    log "BBR module unavailable — using cubic"
+    log "BBR not available — using cubic."
   fi
 
   if [[ "$BBR_ALGO" == "bbr" ]]; then
@@ -329,7 +329,7 @@ check_kernel_bbr() {
 # ============================================================
 select_dns() {
   clear
-  title_box "📡 انتخاب DNS"
+  title_box "${ICON_DNS} Select DNS Provider"
   echo -e "${CYAN}1) Cloudflare${NC}   ${GRAY}(1.1.1.1 / 1.0.0.1)${NC}"
   echo -e "${CYAN}2) Google${NC}       ${GRAY}(8.8.8.8 / 8.8.4.4)${NC}"
   echo -e "${CYAN}3) Quad9${NC}        ${GRAY}(9.9.9.9 / 149.112.112.112)${NC}"
@@ -337,7 +337,7 @@ select_dns() {
   echo -e "${CYAN}5) Shecan${NC}       ${GRAY}(178.22.122.100 / 185.51.200.2)${NC}"
   echo -e "${CYAN}6) Custom${NC}"
   hr
-  read -rp "➤ انتخاب شما: " d
+  read -rp "➤ Choice: " d
 
   case "${d:-}" in
     1) DNS1=1.1.1.1; DNS2=1.0.0.1 ;;
@@ -397,7 +397,7 @@ EOF
 
 apply_netplan_override() {
   [[ -d /etc/netplan ]] || return 0
-  log "Applying Netplan DHCP DNS override"
+  log "Applying Netplan DHCP DNS override."
 
   local np="/etc/netplan/99-vpn-override.yaml"
   backup "$np"
@@ -419,7 +419,7 @@ apply_netplan_override() {
   if netplan generate >/dev/null 2>&1 && netplan apply >/dev/null 2>&1; then
     :
   else
-    log "Netplan failed — rolling back"
+    log "Netplan failed — rolling back."
     restore_from_latest_or_remove "$np" || true
     netplan apply >/dev/null 2>&1 || true
   fi
@@ -742,7 +742,7 @@ setup_ufw() {
 # ============================================================
 restore_defaults() {
   read -rp "Rollback will revert files touched by this script (latest run). Continue? [y/N]: " c
-  [[ "${c:-}" != "y" ]] && return
+  [[ "${c:-}" != "y" ]] && return 0
 
   restore_from_latest_or_remove /etc/sysctl.d/99-vpn-opt.conf
   restore_from_latest_or_remove /etc/security/limits.d/99-vpn.conf
@@ -759,8 +759,9 @@ restore_defaults() {
   systemctl restart systemd-resolved >/dev/null 2>&1 || true
   ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf >/dev/null 2>&1 || true
 
-  echo -e "${GREEN}${ICON_OK} Rollback complete${NC}"
+  echo -e "${GREEN}${ICON_OK} Rollback complete.${NC}"
   pause
+  return 0
 }
 
 # ============================================================
@@ -819,7 +820,7 @@ show_bbr_status() {
   subkv "Qdisc" "$qdisc"
   [[ -n "${avail:-}" ]] && subkv "Available" "$avail"
   if echo "$avail" | grep -qw bbr2; then
-    subkv "Hint" "BBR2 is available (optional)"
+    subkv "Hint" "BBR2 is available (optional)."
   fi
 }
 
@@ -843,7 +844,7 @@ show_ring_status() {
 
 show_status() {
   clear
-  title_box "${ICON_LIST} وضعیت سیستم (System Status)"
+  title_box "${ICON_LIST} System Status"
 
   kv "${ICON_OS} OS" "$OS_NAME"
   kv "Kernel" "$KERNEL_FULL"
@@ -930,34 +931,34 @@ run_step() {
 
 optimize_server() {
   clear
-  title_box "${ICON_ROCKET} اجرای بهینه‌سازی (Optimize Server)"
+  title_box "${ICON_ROCKET} Run Optimization"
 
-  echo -e "${GRAY}${ICON_INFO} این عملیات تنظیمات شبکه/سیستم را برای VPN انجام می‌دهد.${NC}"
-  echo -e "${GRAY}${ICON_INFO} Backup ها در: ${BOLD}$BACKUP_DIR${NC}"
+  echo -e "${GRAY}${ICON_INFO} This will apply system/network tuning for VPN workloads.${NC}"
+  echo -e "${GRAY}${ICON_INFO} Backups: ${BOLD}$BACKUP_DIR${NC}"
   hr
 
   select_dns
 
   clear
-  title_box "${ICON_ROCKET} در حال اجرا..."
+  title_box "${ICON_ROCKET} Running..."
 
   local total=9
   local step=0
 
-  step=$((step+1)); run_step "$step" "$total" "بررسی کرنل و BBR" check_kernel_bbr
-  step=$((step+1)); run_step "$step" "$total" "اعمال DNS" apply_dns
-  step=$((step+1)); run_step "$step" "$total" "Netplan Override (در صورت وجود)" apply_netplan_override
-  step=$((step+1)); run_step "$step" "$total" "اعمال Sysctl (Network Tuning)" apply_sysctl
-  step=$((step+1)); run_step "$step" "$total" "افزایش Limits (nofile)" apply_limits
-  step=$((step+1)); run_step "$step" "$total" "بهینه‌سازی MTU (Safe)" optimize_mtu
-  step=$((step+1)); run_step "$step" "$total" "فعال‌سازی irqbalance" setup_irqbalance
-  step=$((step+1)); run_step "$step" "$total" "تنظیم Ring Buffer (ethtool)" setup_ethtool_ring
-  step=$((step+1)); run_step "$step" "$total" "ایجاد Swap (اختیاری)" setup_swap
+  step=$((step+1)); run_step "$step" "$total" "Kernel/BBR check" check_kernel_bbr
+  step=$((step+1)); run_step "$step" "$total" "Apply DNS" apply_dns
+  step=$((step+1)); run_step "$step" "$total" "Netplan override (if present)" apply_netplan_override
+  step=$((step+1)); run_step "$step" "$total" "Apply sysctl network tuning" apply_sysctl
+  step=$((step+1)); run_step "$step" "$total" "Apply system limits (nofile)" apply_limits
+  step=$((step+1)); run_step "$step" "$total" "MTU optimization (safe)" optimize_mtu
+  step=$((step+1)); run_step "$step" "$total" "Enable irqbalance" setup_irqbalance
+  step=$((step+1)); run_step "$step" "$total" "Tune NIC ring buffers (ethtool)" setup_ethtool_ring
+  step=$((step+1)); run_step "$step" "$total" "Setup swap (optional)" setup_swap
 
-  progress_bar 100 "تمام شد"
+  progress_bar 100 "Done"
   echo
   hr
-  echo -e "${GREEN}${ICON_OK} بهینه‌سازی با موفقیت انجام شد.${NC}"
+  echo -e "${GREEN}${ICON_OK} Optimization completed successfully.${NC}"
   echo -e "${GRAY}${ICON_INFO} Backups: ${BOLD}$BACKUP_DIR${NC}  ${GRAY}(latest -> ${BOLD}$BACKUP_LATEST_LINK${NC}${GRAY})${NC}"
   echo -e "${GRAY}${ICON_INFO} Log: ${BOLD}$LOG_FILE${NC}"
   hr
@@ -984,8 +985,7 @@ quick_summary_line() {
   local cc qdisc dns_hint
   cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "?")"
   qdisc="$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "?")"
-  # ---- IMPORTANT FIX: safe expansion ----
-  dns_hint="${DNS1:-1.1.1.1}/${DNS2:-1.0.0.1}"
+  dns_hint="${DNS1:-1.1.1.1}/${DNS2:-1.0.0.1}"   # safe expansion
   echo -e "${GRAY}${ICON_INFO} cc:${NC} ${BOLD}${cc}${NC}  ${GRAY}| qdisc:${NC} ${BOLD}${qdisc}${NC}  ${GRAY}| DNS:${NC} ${BOLD}${dns_hint}${NC}  ${GRAY}| IF:${NC} ${BOLD}${DEFAULT_IFACE:-?}${NC}"
 }
 
@@ -1003,46 +1003,46 @@ while true; do
   quick_summary_line
   hr
 
-  echo -e " ${GREEN}${ICON_ROCKET} [1]${NC} اجرای بهینه‌سازی کامل (Optimize)"
-  echo -e " ${CYAN}${ICON_LIST} [2]${NC} نمایش وضعیت کامل سیستم (System Status)"
-  echo -e " ${YELLOW}${ICON_REDO} [3]${NC} بازگردانی تغییرات (Rollback)"
-  echo -e " ${BLUE}${ICON_WRENCH} [4]${NC} فعال‌سازی irqbalance"
-  echo -e " ${BLUE}🔧 [5]${NC} تنظیم Ring Buffer (ethtool)"
+  echo -e " ${GREEN}${ICON_ROCKET} [1]${NC} Optimize Server (Safe Apply)"
+  echo -e " ${CYAN}${ICON_LIST} [2]${NC} System Status (Detailed)"
+  echo -e " ${YELLOW}${ICON_REDO} [3]${NC} Rollback (latest backup)"
+  echo -e " ${BLUE}${ICON_WRENCH} [4]${NC} Enable irqbalance"
+  echo -e " ${BLUE}🔧 [5]${NC} Tune ring buffers (ethtool)"
   if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
-    echo -e " ${PURPLE}${ICON_LOCK} [6]${NC} تنظیم فایروال UFW"
-    echo -e " ${PURPLE}${ICON_REDO} [7]${NC} ریبوت سرور"
-    echo -e " ${RED}❌ [0]${NC} خروج"
+    echo -e " ${PURPLE}${ICON_LOCK} [6]${NC} Setup Firewall (UFW)"
+    echo -e " ${PURPLE}${ICON_REDO} [7]${NC} Reboot Server"
+    echo -e " ${RED}❌ [0]${NC} Exit"
   else
-    echo -e " ${PURPLE}${ICON_REDO} [6]${NC} ریبوت سرور"
-    echo -e " ${RED}❌ [0]${NC} خروج"
+    echo -e " ${PURPLE}${ICON_REDO} [6]${NC} Reboot Server"
+    echo -e " ${RED}❌ [0]${NC} Exit"
   fi
 
   hr
   echo -e " ${GRAY}Creator:${NC} ${BOLD}UnknownZero${NC}   ${GRAY}Telegram ID:${NC} ${CYAN}@UnknownZero${NC}"
   hr
 
-  read -rp "➤ انتخاب: " opt
+  read -rp "➤ Select: " opt
 
   case "${opt:-}" in
     1) optimize_server ;;
     2) show_status ;;
     3) restore_defaults ;;
     4)
-      title_box "⚙️ فعال‌سازی irqbalance"
+      title_box "⚙️ Enable irqbalance"
       setup_irqbalance
       if systemctl is-active --quiet irqbalance 2>/dev/null; then
-        echo -e "${GREEN}${ICON_OK} irqbalance فعال شد.${NC}"
+        echo -e "${GREEN}${ICON_OK} irqbalance is active.${NC}"
       else
-        echo -e "${YELLOW}${ICON_WARN} irqbalance فعال نشد (ممکنه روی VM اثر محدود باشه).${NC}"
+        echo -e "${YELLOW}${ICON_WARN} irqbalance is not active (some VMs have limited IRQ behavior).${NC}"
       fi
       hr
       pause
       ;;
     5)
-      title_box "🔧 تنظیم Ring Buffer"
+      title_box "🔧 Tune ring buffers"
       setup_ethtool_ring
-      echo -e "${GREEN}${ICON_OK} تلاش برای تنظیم ring انجام شد (best effort).${NC}"
-      echo -e "${GRAY}${ICON_INFO} برای مشاهده جزئیات: System Status${NC}"
+      echo -e "${GREEN}${ICON_OK} Ring tuning attempted (best effort).${NC}"
+      echo -e "${GRAY}${ICON_INFO} Check details in System Status.${NC}"
       hr
       pause
       ;;
@@ -1059,11 +1059,11 @@ while true; do
       if [[ "$ENABLE_UFW_MENU" -eq 1 ]]; then
         reboot
       else
-        echo -e "${RED}Invalid option${NC}"
+        echo -e "${RED}Invalid option.${NC}"
         sleep 1
       fi
       ;;
     0) exit ;;
-    *) echo -e "${RED}${ICON_FAIL} گزینه نامعتبر${NC}"; sleep 1 ;;
+    *) echo -e "${RED}${ICON_FAIL} Invalid option.${NC}"; sleep 1 ;;
   esac
 done
