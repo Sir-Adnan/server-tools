@@ -136,13 +136,15 @@ ST_CACHE_IP6=''
 
 _net_fetch() { # _net_fetch 4|6 URL
   has_cmd curl || return 1
-  curl "-$1" -fsS --max-time 3 "$2" 2>/dev/null | tr -d '[:space:]'
+  # Short timeout: this runs during the first dashboard render and must
+  # never make the menu feel stuck on servers with broken connectivity.
+  curl "-$1" -fsS --max-time 2 "$2" 2>/dev/null | tr -d '[:space:]'
 }
 
 net_public_ip4() {
   if [[ -z $ST_CACHE_IP4 ]]; then
     local ip='' url
-    for url in 'https://api.ipify.org' 'https://ifconfig.me/ip' 'https://ip.sb'; do
+    for url in 'https://api.ipify.org' 'https://ifconfig.me/ip'; do
       ip="$(_net_fetch 4 "$url")" || ip=''
       is_valid_ipv4 "$ip" && break
       ip=''

@@ -44,15 +44,23 @@ Quick/Custom Optimize flows with honest per-step outcomes.
 ## Backlog (unscheduled ideas)
 
 - `st doctor` — drift detection: compare live kernel values against the
-  last applied profile; offer re-apply.
+  last applied profile; offer re-apply (`--dry-run` already shows the diff;
+  doctor adds re-apply + scheduling-free health verdicts).
 - Before/after snapshot — capture retransmit/drop counters pre-apply so
   `--status` can show the measured effect, not a claim.
+- Capacity model v2 — size conntrack from *expected users* (config
+  `expected_users`) instead of RAM alone, with a RAM-feasibility warning
+  (see the 2-4 GB / 10k-users analysis).
 - ufw-docker integration (actually fix the bypass, not just warn).
 - Panel/node port auto-suggestion for UFW from detected containers.
 - Optional full-IPv6-disable toggle (leak prevention setups).
 - Restore-to-factory: rollback from `original/` across all runs.
-- Capacity calculator: given RAM/CPU, estimate a realistic max users.
+- irqbalance module (consent-based, multi-core hosts only).
 - iperf3 helper (guided server/client test between two nodes).
+
+Recently landed from this list: `--dry-run`, `--report`, reserved service
+ports, zram backend, XanMod/BBRv3 installer, DoT + Iranian DNS presets,
+service-restart offer.
 
 ## Release criteria for v2.0.0
 

@@ -40,9 +40,18 @@ rollback_latest() {
   fi
 
   local src="${ST_BACKUP_DIR}/runs/${run}"
-  local action target restored=0 removed=0 missing=0 sysctl_touched=0
+  local action target restored=0 removed=0 missing=0 sysctl_touched=0 units_touched=0
   while IFS=$'\t' read -r action target; do
     case "$action" in
+      unit)
+        # A systemd unit this run enabled: disable it (stop included) so no
+        # dangling .wants symlink survives after its file is removed below.
+        if has_cmd systemctl; then
+          systemctl disable --now "$target" >/dev/null 2>>"$ST_LOG_FILE" ||
+            log_warn "Could not disable unit ${target}."
+          units_touched=1
+        fi
+        ;;
       modified)
         if [[ -e ${src}${target} || -L ${src}${target} ]]; then
           cp -a "${src}${target}" "$target"
@@ -69,6 +78,10 @@ rollback_latest() {
     esac
   done < <(awk -F'\t' -v run="$run" 'NR > 1 && $2 == run {print $3 "\t" $4}' "$ST_MANIFEST_FILE" | tac)
 
+  if ((units_touched)) && has_cmd systemctl; then
+    systemctl daemon-reload 2>>"$ST_LOG_FILE" ||
+      log_warn "daemon-reload after rollback failed."
+  fi
   if ((sysctl_touched)) && has_cmd sysctl; then
     sysctl --system >/dev/null 2>>"$ST_LOG_FILE" ||
       log_warn "sysctl reload after rollback reported errors (see log)."

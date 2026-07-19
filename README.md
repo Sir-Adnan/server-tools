@@ -56,6 +56,8 @@ bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main
 --auto        بهینه‌سازی غیرتعاملی (لایه پایه + پروفایل تشخیص‌داده‌شده)
                 --profile NAME  --tier S|M|L|XL  --dns cloudflare|ip1,ip2
                 --no-swap  --no-limits  --no-extras
+--dry-run     نمایش پلن و diff دقیق sysctl بدون اعمال هیچ تغییری
+--report      گزارش متنی کامل برای تیکت/پشتیبانی (چاپ + ذخیره)
 --rollback    بازگردانی آخرین اجرای ثبت‌شده و خروج
 --install     نصب به‌عنوان دستور st
 --update      آپدیت خودکار از آخرین Release (با تأیید SHA-256)

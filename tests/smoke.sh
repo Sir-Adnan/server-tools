@@ -37,5 +37,7 @@ if bash "$DIST" --auto --profile >/dev/null 2>&1; then
 fi
 
 bash "$DIST" --help | grep -q -- '--auto' || fail "--help should document --auto"
+bash "$DIST" --help | grep -q -- '--dry-run' || fail "--help should document --dry-run"
+bash "$DIST" --help | grep -q -- '--report' || fail "--help should document --report"
 
 printf 'smoke: OK (v%s)\n' "$VERSION"

@@ -49,8 +49,11 @@ vpn_mss_clamp() {
       printf '\n[Install]\nWantedBy=multi-user.target\n'
     } >"$ST_MSS_UNIT"
     systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
-    systemctl enable server-tools-mss.service >/dev/null 2>>"$ST_LOG_FILE" ||
+    if systemctl enable server-tools-mss.service >/dev/null 2>>"$ST_LOG_FILE"; then
+      manifest_add unit server-tools-mss.service
+    else
       log_warn "Could not enable boot persistence for the MSS rule."
+    fi
   else
     log_warn "No systemd — the MSS rule is active now but will not survive a reboot."
   fi

@@ -97,8 +97,56 @@ _optimize_run() {
   ((with_swap)) && st_run_step "Swap file" swap_apply
   ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
   st_report_summary
+  _offer_service_restart
   config_set last_profile "$ST_PROFILE"
   config_set last_tier "$ST_TIER"
+  return 0
+}
+
+# _offer_service_restart — running services keep their old nofile limit
+# until restarted; offer to restart detected VPN workloads (interactive),
+# or just say so honestly (batch).
+_offer_service_restart() {
+  ((ST_LIMITS_CHANGED)) || return 0
+
+  local containers=''
+  if has_cmd docker; then
+    # grep exit 1 (no match) is a normal outcome here, not an error.
+    containers="$(docker ps --format '{{.Names}}' 2>/dev/null |
+      grep -iE 'marzban|pg[-_]?node|pasarguard|x-?ui|xray|hiddify|sing-?box|hysteria|wg' || true)"
+  fi
+
+  if ((ST_OPT_BATCH)); then
+    if [[ -n $containers ]]; then
+      printf '%sNote:%s restart these containers so they pick up the new nofile limit:\n  %s\n' \
+        "$C_WARN" "$C_RESET" "$(tr '\n' ' ' <<<"$containers")"
+    fi
+    return 0
+  fi
+
+  local name
+  for name in $containers; do # global IFS splits on newlines — one name per entry
+    if ui_confirm "Restart container '${name}' now so it picks up the new limits?"; then
+      if docker restart "$name" >/dev/null 2>>"$ST_LOG_FILE"; then
+        printf '%sRestarted:%s %s\n' "$C_OK" "$C_RESET" "$name"
+      else
+        log_warn "Could not restart ${name}."
+      fi
+    fi
+  done
+
+  local svc
+  for svc in xray x-ui sing-box hysteria-server; do
+    if has_cmd systemctl && systemctl is-active --quiet "$svc" 2>/dev/null; then
+      if ui_confirm "Restart service '${svc}' now so it picks up the new limits?"; then
+        if systemctl restart "$svc" 2>>"$ST_LOG_FILE"; then
+          printf '%sRestarted:%s %s\n' "$C_OK" "$C_RESET" "$svc"
+        else
+          log_warn "Could not restart ${svc}."
+        fi
+      fi
+    fi
+  done
   return 0
 }
 
@@ -129,10 +177,9 @@ quick_optimize() {
   ui_pause
 }
 
-# auto_optimize — the non-interactive flow behind --auto. No prompts: DNS is
-# only touched when --dns was given; invalid values die with a clear message.
-auto_optimize() {
-  detect_stack
+# _apply_cli_profile_tier — resolve profile/tier honouring --profile/--tier
+# overrides; invalid values die with a clear message. Shared by auto+dry-run.
+_apply_cli_profile_tier() {
   if [[ -n $ST_AUTO_PROFILE ]]; then
     case "$ST_AUTO_PROFILE" in
       general | vpn-node | wireguard | panel | full)
@@ -152,6 +199,13 @@ auto_optimize() {
       *) die "Invalid --tier '${ST_AUTO_TIER}' (S|M|L|XL)." ;;
     esac
   fi
+}
+
+# auto_optimize — the non-interactive flow behind --auto. No prompts: DNS is
+# only touched when --dns was given.
+auto_optimize() {
+  detect_stack
+  _apply_cli_profile_tier
 
   local with_dns=0
   if [[ -n $ST_AUTO_DNS ]]; then
@@ -163,6 +217,19 @@ auto_optimize() {
   ui_title "Auto Optimize (non-interactive)"
   _optimize_show_plan
   _optimize_run "$with_dns" "$ST_AUTO_SWAP" "$ST_AUTO_LIMITS" "$ST_AUTO_EXTRAS"
+}
+
+# dry_run_optimize — --dry-run: show the plan and the exact sysctl diff,
+# apply absolutely nothing.
+dry_run_optimize() {
+  detect_stack
+  _apply_cli_profile_tier
+  ui_title "Dry Run — nothing will be applied"
+  _optimize_show_plan
+  ui_hr
+  sysctl_dry_run
+  printf '\nA real run would also cover: nofile limits, journald cap & NTP, swap%s.\n' \
+    "$([[ -n $ST_AUTO_DNS ]] && printf ', DNS')"
 }
 
 custom_optimize() {

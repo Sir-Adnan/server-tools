@@ -19,7 +19,8 @@ profile_resolve_auto() {
   local detected=" ${ST_DETECTED[*]-} "
   ST_PROFILE_SOURCE='auto-detected'
   if [[ $detected == *'marzban-node'* || $detected == *'pg-node'* ||
-    $detected == *'xray'* || $detected == *'x-ui'* ]]; then
+    $detected == *'xray'* || $detected == *'x-ui'* || $detected == *'hiddify'* ||
+    $detected == *'sing-box'* || $detected == *'hysteria'* || $detected == *'openvpn'* ]]; then
     ST_PROFILE='vpn-node'
   elif [[ $detected == *'wireguard'* || $detected == *'wg-dashboard'* ]]; then
     ST_PROFILE='wireguard'

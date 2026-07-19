@@ -8,6 +8,41 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 Full rewrite ("ServerTools v2").
 
+### Added — hardening & pro-features round
+
+- `--dry-run`: renders the exact sysctl file for the resolved profile/tier
+  and diffs every key against the live kernel — applies nothing.
+- `--report` / Tools menu: plain-text support report (system, workload,
+  live tuning keys, swap, manifest tail, log tail), printed and saved.
+- Reserved service ports: listening ports inside the ephemeral range are
+  auto-added to `net.ipv4.ip_local_reserved_ports` so outgoing connections
+  can never collide with panel/node listeners.
+- zram swap backend (`swap_backend = auto|file|zram`): swap file remains the
+  default; auto falls back to compressed-RAM zram when the disk is too
+  small. Boot persistence via oneshot unit; rollback swapoffs and resets.
+- Service-restart offer after limits changes (running services keep the old
+  nofile until restarted); batch mode prints the affected containers.
+- XanMod kernel installer (BBRv3) as an ADVANCED consent-based tool:
+  apt-only, CPU psABI level detection, double warning, container-virt guard.
+- DNS: Electro and Begzar presets (public-IP Iranian resolvers); latency
+  test now measures real DNS queries via dig (ping fallback);
+  `DNSOverTLS=opportunistic` on systemd-resolved; resolv.conf gains
+  `options timeout:2 attempts:2 rotate`; stub-bypass detection warns when
+  apps would not see the new DNS.
+- sysctl base: `tcp_rfc1337=1`, `optmem_max`, L/XL high-churn caps
+  (`tcp_max_tw_buckets`, `tcp_max_orphans`) — doc and code now in sync;
+  live qdisc switch via `tc qdisc replace` (no reboot needed).
+- Detection: Hiddify, sing-box, Hysteria, OpenVPN, and podman containers.
+
+### Fixed
+
+- Rollback now disables systemd units it created (manifest `unit` action) —
+  no more dangling `.wants` symlinks after removing MSS/zram units.
+- `ss | head` under pipefail produced spurious warnings on long listings.
+- Self-update downloaded the release twice; now a single verified download.
+- Public-IP lookup trimmed (2 endpoints, 2s timeout) so the first dashboard
+  render never feels stuck on broken-connectivity servers.
+
 ### Added — Phase 4 (automation & distribution)
 
 - `--auto` non-interactive mode for fleet provisioning: applies the base

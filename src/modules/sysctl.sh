@@ -26,6 +26,16 @@ sysctl_detect_bbr() {
   return 0
 }
 
+# _sysctl_reserved_ports — listening ports that sit inside our ephemeral
+# range (10240-65535), comma-joined for ip_local_reserved_ports. Capped via
+# awk (head would SIGPIPE the producer under pipefail).
+_sysctl_reserved_ports() {
+  has_cmd ss || return 0
+  ss -tuln 2>/dev/null |
+    awk 'NR > 1 {sub(/.*:/, "", $5); if ($5 ~ /^[0-9]+$/ && $5 >= 10240 && $5 <= 65535) print $5}' |
+    sort -un | awk 'NR <= 32' | paste -sd, -
+}
+
 _sysctl_render() {
   local buf_bytes=$((ST_BUF_MB * 1048576))
   local ram_mb ram_pages
@@ -58,6 +68,8 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_no_metrics_save = 1
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_notsent_lowat = 16384
+# Protect TIME-WAIT sockets from RST assassination (RFC 1337).
+net.ipv4.tcp_rfc1337 = 1
 # Mode 1 probes only after a blackhole is detected (mode 2 is the harmful one).
 net.ipv4.tcp_mtu_probing = 1
 
@@ -71,11 +83,39 @@ net.ipv4.tcp_wmem = 4096 65536 ${buf_bytes}
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 net.ipv4.udp_mem = $((ram_pages / 32)) $((ram_pages / 16)) $((ram_pages / 8))
+net.core.optmem_max = 65536
 
 # --- System capacity
 fs.file-max = 2097152
 vm.swappiness = 10
 EOF
+
+  # High-churn caps only where the connection volume justifies them.
+  if [[ $ST_TIER == L || $ST_TIER == XL ]]; then
+    local tw_buckets=524288 max_orphans=131072
+    if [[ $ST_TIER == XL ]]; then
+      tw_buckets=1048576
+      max_orphans=262144
+    fi
+    cat <<EOF
+
+# --- High-churn caps (tier ${ST_TIER})
+net.ipv4.tcp_max_tw_buckets = ${tw_buckets}
+net.ipv4.tcp_max_orphans = ${max_orphans}
+EOF
+  fi
+
+  # Keep detected service ports out of the ephemeral source-port pool so an
+  # outgoing connection can never collide with a panel/node listener.
+  local reserved
+  reserved="$(_sysctl_reserved_ports)" || reserved=''
+  if [[ -n $reserved ]]; then
+    cat <<EOF
+
+# --- Listening ports inside the ephemeral range, reserved automatically
+net.ipv4.ip_local_reserved_ports = ${reserved}
+EOF
+  fi
 
   if profile_wants_forwarding; then
     cat <<EOF
@@ -96,6 +136,35 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.default.accept_source_route = 0
 EOF
   fi
+}
+
+# sysctl_dry_run — render the exact config this run would write and diff
+# every key against the live kernel. Applies NOTHING and tracks nothing.
+sysctl_dry_run() {
+  sysctl_detect_bbr
+  local rendered line key value current changed=0 total=0
+  rendered="$(_sysctl_render)"
+
+  printf '%s[Rendered %s]%s\n%s\n\n' "$C_TITLE" "$ST_SYSCTL_FILE" "$C_RESET" "$rendered"
+  printf '%s[Diff vs live kernel]%s\n' "$C_TITLE" "$C_RESET"
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    key="${line%%=*}"
+    key="${key//[[:space:]]/}"
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    current="$(sysctl_get "$key")"
+    total=$((total + 1))
+    # Normalize runs of whitespace so multi-value keys compare fairly.
+    if [[ "$(tr -s ' \t' ' ' <<<"$current")" != "$(tr -s ' \t' ' ' <<<"$value")" ]]; then
+      printf '  %s%-50s%s %s -> %s\n' "$C_KEY" "$key" "$C_RESET" "${current}" "${value}"
+      changed=$((changed + 1))
+    fi
+  done <<<"$rendered"
+
+  ((changed == 0)) && printf '  (kernel already matches this profile)\n'
+  printf '\n%s%d of %d keys would change. Nothing was applied.%s\n' \
+    "$C_WARN" "$changed" "$total" "$C_RESET"
 }
 
 sysctl_apply() {
@@ -146,6 +215,15 @@ sysctl_apply() {
   # Apply; per-key errors land in the log instead of vanishing — the keys we
   # care about are verified individually right after.
   sysctl --system >/dev/null 2>>"$ST_LOG_FILE" || true
+
+  # default_qdisc only affects NEW interfaces; switch the live default
+  # interface too so the change is complete without a reboot.
+  local iface
+  iface="$(net_default_iface)" || iface=''
+  if [[ -n $iface ]] && has_cmd tc; then
+    tc qdisc replace dev "$iface" root "$ST_QDISC" 2>>"$ST_LOG_FILE" ||
+      log_warn "Could not switch ${iface} to ${ST_QDISC} live (it applies after reboot)."
+  fi
 
   local cc_now qdisc_now rc=0
   cc_now="$(sysctl_get net.ipv4.tcp_congestion_control)"

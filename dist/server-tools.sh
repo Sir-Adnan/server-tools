@@ -229,6 +229,7 @@ ui_menu_item() {
 }
 
 ui_logo() {
+  # clear can fail on TERM=dumb / weird terminals — purely cosmetic.
   ((ST_OPT_BATCH)) || clear 2>/dev/null || true
   printf '%s' "$C_TITLE"
   cat <<'LOGO'
@@ -411,13 +412,15 @@ ST_CACHE_IP6=''
 
 _net_fetch() { # _net_fetch 4|6 URL
   has_cmd curl || return 1
-  curl "-$1" -fsS --max-time 3 "$2" 2>/dev/null | tr -d '[:space:]'
+  # Short timeout: this runs during the first dashboard render and must
+  # never make the menu feel stuck on servers with broken connectivity.
+  curl "-$1" -fsS --max-time 2 "$2" 2>/dev/null | tr -d '[:space:]'
 }
 
 net_public_ip4() {
   if [[ -z $ST_CACHE_IP4 ]]; then
     local ip='' url
-    for url in 'https://api.ipify.org' 'https://ifconfig.me/ip' 'https://ip.sb'; do
+    for url in 'https://api.ipify.org' 'https://ifconfig.me/ip'; do
       ip="$(_net_fetch 4 "$url")" || ip=''
       is_valid_ipv4 "$ip" && break
       ip=''
@@ -557,9 +560,18 @@ rollback_latest() {
   fi
 
   local src="${ST_BACKUP_DIR}/runs/${run}"
-  local action target restored=0 removed=0 missing=0 sysctl_touched=0
+  local action target restored=0 removed=0 missing=0 sysctl_touched=0 units_touched=0
   while IFS=$'\t' read -r action target; do
     case "$action" in
+      unit)
+        # A systemd unit this run enabled: disable it (stop included) so no
+        # dangling .wants symlink survives after its file is removed below.
+        if has_cmd systemctl; then
+          systemctl disable --now "$target" >/dev/null 2>>"$ST_LOG_FILE" ||
+            log_warn "Could not disable unit ${target}."
+          units_touched=1
+        fi
+        ;;
       modified)
         if [[ -e ${src}${target} || -L ${src}${target} ]]; then
           cp -a "${src}${target}" "$target"
@@ -586,6 +598,10 @@ rollback_latest() {
     esac
   done < <(awk -F'\t' -v run="$run" 'NR > 1 && $2 == run {print $3 "\t" $4}' "$ST_MANIFEST_FILE" | tac)
 
+  if ((units_touched)) && has_cmd systemctl; then
+    systemctl daemon-reload 2>>"$ST_LOG_FILE" ||
+      log_warn "daemon-reload after rollback failed."
+  fi
   if ((sysctl_touched)) && has_cmd sysctl; then
     sysctl --system >/dev/null 2>>"$ST_LOG_FILE" ||
       log_warn "sysctl reload after rollback reported errors (see log)."
@@ -628,24 +644,37 @@ _detect_match() { # _detect_match HAYSTACK REGEX
 detect_stack() {
   ST_DETECTED=()
 
-  local docker_ps=''
+  # Containers from docker AND podman — some hosts run nodes under podman.
+  local containers=''
   if has_cmd docker; then
-    docker_ps="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null)" || docker_ps=''
+    containers="$(docker ps --format '{{.Names}} {{.Image}}' 2>/dev/null)" || containers=''
+  fi
+  if has_cmd podman; then
+    local podman_ps
+    podman_ps="$(podman ps --format '{{.Names}} {{.Image}}' 2>/dev/null)" || podman_ps=''
+    containers="${containers}${containers:+$'\n'}${podman_ps}"
   fi
 
   # Nodes first — "marzban" alone must not swallow "marzban-node".
-  _detect_match "$docker_ps" 'marzban[-_]node' && _detect_add 'marzban-node'
-  _detect_match "$docker_ps" 'pg[-_]node|pasarguard' && _detect_add 'pg-node'
-  if _detect_match "$docker_ps" 'marzban|marzneshin' &&
-    ! _detect_match "$docker_ps" 'marzban[-_]node'; then
+  _detect_match "$containers" 'marzban[-_]node' && _detect_add 'marzban-node'
+  _detect_match "$containers" 'pg[-_]node|pasarguard' && _detect_add 'pg-node'
+  if _detect_match "$containers" 'marzban|marzneshin' &&
+    ! _detect_match "$containers" 'marzban[-_]node'; then
     _detect_add 'marzban-panel'
   fi
-  _detect_match "$docker_ps" '3x-ui|x-ui' && _detect_add 'x-ui'
-  _detect_match "$docker_ps" 'wgdashboard|wg-easy' && _detect_add 'wg-dashboard'
+  _detect_match "$containers" 'hiddify' && _detect_add 'hiddify'
+  _detect_match "$containers" '3x-ui|x-ui' && _detect_add 'x-ui'
+  _detect_match "$containers" 'sing-?box' && _detect_add 'sing-box'
+  _detect_match "$containers" 'hysteria' && _detect_add 'hysteria'
+  _detect_match "$containers" 'openvpn' && _detect_add 'openvpn'
+  _detect_match "$containers" 'wgdashboard|wg-easy' && _detect_add 'wg-dashboard'
 
   if has_cmd systemctl; then
     systemctl is-active --quiet x-ui 2>/dev/null && _detect_add 'x-ui'
     systemctl is-active --quiet xray 2>/dev/null && _detect_add 'xray'
+    systemctl is-active --quiet sing-box 2>/dev/null && _detect_add 'sing-box'
+    systemctl is-active --quiet hysteria-server 2>/dev/null && _detect_add 'hysteria'
+    systemctl is-active --quiet openvpn 2>/dev/null && _detect_add 'openvpn'
   fi
 
   if has_cmd wg && [[ -n "$(wg show interfaces 2>/dev/null)" ]]; then
@@ -766,7 +795,8 @@ profile_resolve_auto() {
   local detected=" ${ST_DETECTED[*]-} "
   ST_PROFILE_SOURCE='auto-detected'
   if [[ $detected == *'marzban-node'* || $detected == *'pg-node'* ||
-    $detected == *'xray'* || $detected == *'x-ui'* ]]; then
+    $detected == *'xray'* || $detected == *'x-ui'* || $detected == *'hiddify'* ||
+    $detected == *'sing-box'* || $detected == *'hysteria'* || $detected == *'openvpn'* ]]; then
     ST_PROFILE='vpn-node'
   elif [[ $detected == *'wireguard'* || $detected == *'wg-dashboard'* ]]; then
     ST_PROFILE='wireguard'
@@ -857,6 +887,16 @@ sysctl_detect_bbr() {
   return 0
 }
 
+# _sysctl_reserved_ports — listening ports that sit inside our ephemeral
+# range (10240-65535), comma-joined for ip_local_reserved_ports. Capped via
+# awk (head would SIGPIPE the producer under pipefail).
+_sysctl_reserved_ports() {
+  has_cmd ss || return 0
+  ss -tuln 2>/dev/null |
+    awk 'NR > 1 {sub(/.*:/, "", $5); if ($5 ~ /^[0-9]+$/ && $5 >= 10240 && $5 <= 65535) print $5}' |
+    sort -un | awk 'NR <= 32' | paste -sd, -
+}
+
 _sysctl_render() {
   local buf_bytes=$((ST_BUF_MB * 1048576))
   local ram_mb ram_pages
@@ -889,6 +929,8 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_no_metrics_save = 1
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_notsent_lowat = 16384
+# Protect TIME-WAIT sockets from RST assassination (RFC 1337).
+net.ipv4.tcp_rfc1337 = 1
 # Mode 1 probes only after a blackhole is detected (mode 2 is the harmful one).
 net.ipv4.tcp_mtu_probing = 1
 
@@ -902,11 +944,39 @@ net.ipv4.tcp_wmem = 4096 65536 ${buf_bytes}
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 net.ipv4.udp_mem = $((ram_pages / 32)) $((ram_pages / 16)) $((ram_pages / 8))
+net.core.optmem_max = 65536
 
 # --- System capacity
 fs.file-max = 2097152
 vm.swappiness = 10
 EOF
+
+  # High-churn caps only where the connection volume justifies them.
+  if [[ $ST_TIER == L || $ST_TIER == XL ]]; then
+    local tw_buckets=524288 max_orphans=131072
+    if [[ $ST_TIER == XL ]]; then
+      tw_buckets=1048576
+      max_orphans=262144
+    fi
+    cat <<EOF
+
+# --- High-churn caps (tier ${ST_TIER})
+net.ipv4.tcp_max_tw_buckets = ${tw_buckets}
+net.ipv4.tcp_max_orphans = ${max_orphans}
+EOF
+  fi
+
+  # Keep detected service ports out of the ephemeral source-port pool so an
+  # outgoing connection can never collide with a panel/node listener.
+  local reserved
+  reserved="$(_sysctl_reserved_ports)" || reserved=''
+  if [[ -n $reserved ]]; then
+    cat <<EOF
+
+# --- Listening ports inside the ephemeral range, reserved automatically
+net.ipv4.ip_local_reserved_ports = ${reserved}
+EOF
+  fi
 
   if profile_wants_forwarding; then
     cat <<EOF
@@ -927,6 +997,35 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv4.conf.default.accept_source_route = 0
 EOF
   fi
+}
+
+# sysctl_dry_run — render the exact config this run would write and diff
+# every key against the live kernel. Applies NOTHING and tracks nothing.
+sysctl_dry_run() {
+  sysctl_detect_bbr
+  local rendered line key value current changed=0 total=0
+  rendered="$(_sysctl_render)"
+
+  printf '%s[Rendered %s]%s\n%s\n\n' "$C_TITLE" "$ST_SYSCTL_FILE" "$C_RESET" "$rendered"
+  printf '%s[Diff vs live kernel]%s\n' "$C_TITLE" "$C_RESET"
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    key="${line%%=*}"
+    key="${key//[[:space:]]/}"
+    value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    current="$(sysctl_get "$key")"
+    total=$((total + 1))
+    # Normalize runs of whitespace so multi-value keys compare fairly.
+    if [[ "$(tr -s ' \t' ' ' <<<"$current")" != "$(tr -s ' \t' ' ' <<<"$value")" ]]; then
+      printf '  %s%-50s%s %s -> %s\n' "$C_KEY" "$key" "$C_RESET" "${current}" "${value}"
+      changed=$((changed + 1))
+    fi
+  done <<<"$rendered"
+
+  ((changed == 0)) && printf '  (kernel already matches this profile)\n'
+  printf '\n%s%d of %d keys would change. Nothing was applied.%s\n' \
+    "$C_WARN" "$changed" "$total" "$C_RESET"
 }
 
 sysctl_apply() {
@@ -978,6 +1077,15 @@ sysctl_apply() {
   # care about are verified individually right after.
   sysctl --system >/dev/null 2>>"$ST_LOG_FILE" || true
 
+  # default_qdisc only affects NEW interfaces; switch the live default
+  # interface too so the change is complete without a reboot.
+  local iface
+  iface="$(net_default_iface)" || iface=''
+  if [[ -n $iface ]] && has_cmd tc; then
+    tc qdisc replace dev "$iface" root "$ST_QDISC" 2>>"$ST_LOG_FILE" ||
+      log_warn "Could not switch ${iface} to ${ST_QDISC} live (it applies after reboot)."
+  fi
+
   local cc_now qdisc_now rc=0
   cc_now="$(sysctl_get net.ipv4.tcp_congestion_control)"
   qdisc_now="$(sysctl_get net.core.default_qdisc)"
@@ -1012,12 +1120,16 @@ ST_DNS1=''
 ST_DNS2=''
 
 # Format: name|primary|secondary
+# Iran-hosted anti-sanction resolvers with PUBLIC IPs only — services like
+# 403.online announce private-range addresses that only route inside Iran.
 readonly -a ST_DNS_PROVIDERS=(
   'Cloudflare|1.1.1.1|1.0.0.1'
   'Google|8.8.8.8|8.8.4.4'
   'Quad9|9.9.9.9|149.112.112.112'
   'OpenDNS|208.67.222.222|208.67.220.220'
   'Shecan (for Iran-hosted servers)|178.22.122.100|185.51.200.2'
+  'Electro (for Iran-hosted servers)|78.157.42.100|78.157.42.101'
+  'Begzar (for Iran-hosted servers)|185.55.226.26|185.55.225.25'
 )
 
 # is_valid_ip — IPv4 strictly, IPv6 loosely (contains a colon, no spaces).
@@ -1025,17 +1137,29 @@ is_valid_ip() {
   is_valid_ipv4 "$1" || [[ $1 == *:* && $1 != *' '* && -n $1 ]]
 }
 
+# _dns_probe_ms IP — a real DNS query time when dig exists (resolvers often
+# deprioritize ICMP, so ping understates real performance); ping fallback.
+_dns_probe_ms() {
+  if has_cmd dig; then
+    dig +tries=1 +time=2 "@$1" google.com A 2>/dev/null |
+      awk '/Query time:/ {print $4; exit}'
+  elif has_cmd ping; then
+    ping -c 1 -W 1 "$1" 2>/dev/null |
+      awk -F'time=' '/time=/ {split($2, a, " "); print a[1]; exit}'
+  fi
+}
+
 dns_latency_test() {
-  if ! has_cmd ping; then
-    printf 'ping is not available on this system.\n'
+  if ! has_cmd dig && ! has_cmd ping; then
+    printf 'Neither dig nor ping is available on this system.\n'
     return 0
   fi
-  local entry name ip1 ip2 ms
-  printf '%sLatency to each provider (1 probe, 1s timeout):%s\n' "$C_MUTED" "$C_RESET"
+  local entry name ip1 ip2 ms method='ping'
+  has_cmd dig && method='real DNS query (dig)'
+  printf '%sLatency per provider — measured via %s:%s\n' "$C_MUTED" "$method" "$C_RESET"
   for entry in "${ST_DNS_PROVIDERS[@]}"; do
     IFS='|' read -r name ip1 ip2 <<<"$entry"
-    ms="$(ping -c 1 -W 1 "$ip1" 2>/dev/null |
-      awk -F'time=' '/time=/ {split($2, a, " "); print a[1]; exit}')" || ms=''
+    ms="$(_dns_probe_ms "$ip1")" || ms=''
     if [[ -n $ms ]]; then
       printf '  %-34s %s ms\n' "$name" "$ms"
     else
@@ -1056,16 +1180,16 @@ dns_select_menu() {
       ui_menu_item "$i" "$name" "${ip1} / ${ip2}"
       i=$((i + 1))
     done
-    ui_menu_item 6 "Custom" "enter your own (IPv4 or IPv6)"
-    ui_menu_item t "Latency test" "ping every provider first"
+    ui_menu_item 8 "Custom" "enter your own (IPv4 or IPv6)"
+    ui_menu_item t "Latency test" "measure every provider first"
     ui_menu_item 0 "Keep current DNS" "no DNS change"
     read -rp "Select [0]: " choice || return 1
     case "${choice:-0}" in
-      [1-5])
+      [1-7])
         IFS='|' read -r name ST_DNS1 ST_DNS2 <<<"${ST_DNS_PROVIDERS[$((choice - 1))]}"
         return 0
         ;;
-      6)
+      8)
         read -rp "Primary DNS: " ST_DNS1 || return 1
         read -rp "Secondary DNS: " ST_DNS2 || return 1
         if is_valid_ip "$ST_DNS1" && is_valid_ip "$ST_DNS2"; then
@@ -1127,9 +1251,17 @@ dns_apply() {
 [Resolve]
 DNS=${ST_DNS1} ${ST_DNS2}
 FallbackDNS=${ST_DNS2}
+# Encrypt DNS when the resolver supports it, fall back to plain otherwise.
+DNSOverTLS=opportunistic
 EOF
     if ! systemctl restart systemd-resolved 2>>"$ST_LOG_FILE"; then
       log_warn "systemd-resolved restart failed — drop-in written but not active yet."
+      return 3
+    fi
+    # Apps read /etc/resolv.conf directly; if it does not point at the
+    # resolved stub, the drop-in silently changes nothing for them.
+    if ! grep -q '127.0.0.53' /etc/resolv.conf 2>/dev/null; then
+      log_warn "resolv.conf does not use the systemd-resolved stub (127.0.0.53) — some apps may bypass the new DNS."
       return 3
     fi
   else
@@ -1143,6 +1275,8 @@ EOF
 # Generated by ${ST_NAME} v${ST_VERSION}
 nameserver ${ST_DNS1}
 nameserver ${ST_DNS2}
+# Fast failover: 2s per try, alternate between the two servers.
+options timeout:2 attempts:2 rotate
 EOF
     log_info "resolv.conf written directly (no systemd-resolved); note that a DHCP client may overwrite it."
   fi
@@ -1155,47 +1289,37 @@ EOF
 
 # ------------------------- src/modules/swap.sh -------------------------
 # ============================================================================
-# modules/swap.sh — create a swap file only when no swap exists at all.
+# modules/swap.sh — swap provisioning when no swap exists at all.
 #
-# Fixes two legacy v1 flaws: the fstab entry is written only AFTER swapon
-# verifiably succeeds, and btrfs gets explicit CoW handling (fallocate'd
-# files are not usable as swap there).
+# Backends (config key swap_backend = auto | file | zram):
+#   file — swap file on disk: real extra capacity, the universal safe default.
+#   zram — compressed in-RAM swap: no disk needed, much faster than slow VPS
+#          disks, but adds no capacity beyond RAM itself.
+#   auto — file first (best scenario for most servers); falls back to zram
+#          automatically when the disk is too small for a swap file.
+#
+# The fstab entry / boot unit is only written AFTER swapon verifiably works.
 # ============================================================================
+
+readonly ST_ZRAM_UNIT='/etc/systemd/system/server-tools-zram.service'
 
 swap_is_active() {
   [[ -r /proc/swaps ]] && awk 'NR > 1 {found = 1} END {exit !found}' /proc/swaps
 }
 
-swap_apply() {
-  if swap_is_active; then
-    log_info "Swap already active — skipped."
-    return 2
-  fi
-
-  local swapfile='/swapfile'
-  local size_mb
-  size_mb="$(config_get swap_size_mb 2048)"
-  [[ $size_mb =~ ^[0-9]+$ ]] || size_mb=2048
-
-  # Refuse when disk headroom is too small (swap size + 1 GB safety margin).
-  local avail_mb
-  avail_mb="$(df -Pm / 2>/dev/null | awk 'NR == 2 {print $4}')" || avail_mb=0
-  [[ $avail_mb =~ ^[0-9]+$ ]] || avail_mb=0
-  if ((avail_mb < size_mb + 1024)); then
-    log_error "Not enough free disk for a ${size_mb} MB swap file (available: ${avail_mb} MB)."
-    return 1
-  fi
-
+# _swap_file_setup SIZE_MB
+_swap_file_setup() {
+  local size_mb="$1" swapfile='/swapfile' fstype
   st_track_file /etc/fstab
   st_track_file "$swapfile" # recorded as "created" so rollback removes it
 
-  local fstype
   fstype="$(stat -f -c %T / 2>/dev/null)" || fstype=''
   if [[ $fstype == btrfs ]]; then
-    # CoW must be disabled on the empty file before any data is written.
+    # CoW must be disabled on the empty file before any data is written, and
+    # fallocate'd files are not usable as swap on btrfs — always use dd.
     touch "$swapfile"
     if has_cmd chattr; then
-      chattr +C "$swapfile" 2>/dev/null || true
+      chattr +C "$swapfile" 2>/dev/null || true # best effort; swapon verifies below
     fi
     dd if=/dev/zero of="$swapfile" bs=1M count="$size_mb" status=none 2>>"$ST_LOG_FILE" || return 1
   else
@@ -1215,9 +1339,100 @@ swap_apply() {
   if ! grep -qE '^[[:space:]]*/swapfile[[:space:]]' /etc/fstab 2>/dev/null; then
     printf '/swapfile none swap sw 0 0\n' >>/etc/fstab
   fi
-
-  log_info "Swap enabled: ${size_mb} MB at ${swapfile} (fs: ${fstype:-unknown})."
+  log_info "Swap file enabled: ${size_mb} MB (fs: ${fstype:-unknown})."
   return 0
+}
+
+# _swap_zram_setup SIZE_MB — compressed swap in RAM, priority above any
+# future disk swap. Boot persistence via a oneshot unit (nothing resident).
+_swap_zram_setup() {
+  local size_mb="$1"
+  ((size_mb < 256)) && size_mb=256
+  ((size_mb > 4096)) && size_mb=4096
+
+  if ! modprobe zram 2>>"$ST_LOG_FILE" || [[ ! -b /dev/zram0 ]]; then
+    log_error "zram kernel module unavailable on this system."
+    return 1
+  fi
+  # lz4 beats the default algorithm on weak vCPUs; not fatal when missing.
+  echo lz4 >/sys/block/zram0/comp_algorithm 2>/dev/null || true
+  if ! echo "${size_mb}M" >/sys/block/zram0/disksize 2>>"$ST_LOG_FILE"; then
+    log_error "Could not size /dev/zram0."
+    return 1
+  fi
+  mkswap /dev/zram0 >/dev/null 2>>"$ST_LOG_FILE" || return 1
+  if ! swapon -p 100 /dev/zram0 2>>"$ST_LOG_FILE"; then
+    log_error "swapon on /dev/zram0 failed."
+    return 1
+  fi
+
+  if [[ -d /etc/systemd/system ]] && has_cmd systemctl; then
+    st_track_file "$ST_ZRAM_UNIT"
+    cat >"$ST_ZRAM_UNIT" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[Unit]
+Description=ServerTools zram swap (oneshot, exits after boot)
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'modprobe zram && { echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null; true; } && echo ${size_mb}M > /sys/block/zram0/disksize && mkswap /dev/zram0 && swapon -p 100 /dev/zram0'
+ExecStop=/bin/bash -c 'swapoff /dev/zram0 && echo 1 > /sys/block/zram0/reset'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
+    if systemctl enable server-tools-zram.service >/dev/null 2>>"$ST_LOG_FILE"; then
+      manifest_add unit server-tools-zram.service
+    else
+      log_warn "Could not enable zram boot persistence — active now, gone after reboot."
+    fi
+  else
+    log_warn "No systemd — zram swap is active now but will not survive a reboot."
+  fi
+
+  log_info "zram swap enabled: ${size_mb} MB compressed (priority 100)."
+  return 0
+}
+
+swap_apply() {
+  if swap_is_active; then
+    log_info "Swap already active — skipped."
+    return 2
+  fi
+
+  local backend size_mb ram_mb avail_mb disk_ok=0
+  backend="$(config_get swap_backend auto)"
+  size_mb="$(config_get swap_size_mb 2048)"
+  [[ $size_mb =~ ^[0-9]+$ ]] || size_mb=2048
+  ram_mb="$(mem_total_mb)"
+
+  # Disk headroom check: swap size + 1 GB safety margin.
+  avail_mb="$(df -Pm / 2>/dev/null | awk 'NR == 2 {print $4}')" || avail_mb=0
+  [[ $avail_mb =~ ^[0-9]+$ ]] || avail_mb=0
+  ((avail_mb >= size_mb + 1024)) && disk_ok=1
+
+  case "$backend" in
+    file)
+      if ((disk_ok == 0)); then
+        log_error "Not enough free disk for a ${size_mb} MB swap file (available: ${avail_mb} MB)."
+        return 1
+      fi
+      _swap_file_setup "$size_mb"
+      ;;
+    zram)
+      _swap_zram_setup "$((ram_mb / 2))"
+      ;;
+    *) # auto — real disk capacity first, compressed RAM as the fallback.
+      if ((disk_ok)); then
+        _swap_file_setup "$size_mb"
+      else
+        log_warn "Disk too small for a swap file — using zram (compressed RAM) instead."
+        _swap_zram_setup "$((ram_mb / 2))"
+      fi
+      ;;
+  esac
 }
 
 # ------------------------- src/modules/limits.sh -------------------------
@@ -1230,7 +1445,12 @@ swap_apply() {
 readonly ST_LIMITS_FILE='/etc/security/limits.d/99-server-tools.conf'
 readonly ST_SYSTEMD_DROPIN='/etc/systemd/system.conf.d/99-server-tools.conf'
 
+# Set when limits were (re)written this run — running services keep their
+# old nofile until restarted, so the optimizer offers a restart afterwards.
+ST_LIMITS_CHANGED=0
+
 limits_apply() {
+  ST_LIMITS_CHANGED=1
   st_track_file "$ST_LIMITS_FILE"
   mkdir -p "$(dirname "$ST_LIMITS_FILE")"
   cat >"$ST_LIMITS_FILE" <<EOF
@@ -1534,8 +1754,11 @@ vpn_mss_clamp() {
       printf '\n[Install]\nWantedBy=multi-user.target\n'
     } >"$ST_MSS_UNIT"
     systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
-    systemctl enable server-tools-mss.service >/dev/null 2>>"$ST_LOG_FILE" ||
+    if systemctl enable server-tools-mss.service >/dev/null 2>>"$ST_LOG_FILE"; then
+      manifest_add unit server-tools-mss.service
+    else
       log_warn "Could not enable boot persistence for the MSS rule."
+    fi
   else
     log_warn "No systemd — the MSS rule is active now but will not survive a reboot."
   fi
@@ -1571,6 +1794,87 @@ vpn_docker_ufw_audit() {
     log_warn "Could not list container ports."
   printf '\nMitigations: bind sensitive ports to 127.0.0.1 in compose, or use the\n'
   printf 'ufw-docker approach (planned in ROADMAP.md backlog).\n'
+}
+
+# ------------------------- src/modules/kernel.sh -------------------------
+# ============================================================================
+# modules/kernel.sh — ADVANCED, opt-in only: XanMod kernel for BBRv3.
+#
+# BBRv3 is not in mainline kernels; XanMod ships it. Replacing the kernel is
+# the riskiest thing this project can do, so this flow is apt-only, warns
+# twice, and never runs inside Quick/Auto optimize. After a reboot the
+# existing sysctl config picks BBRv3 up automatically (it registers as
+# "bbr"), so nothing else needs to change.
+# ============================================================================
+
+readonly ST_XANMOD_KEYRING='/usr/share/keyrings/xanmod-archive-keyring.gpg'
+readonly ST_XANMOD_LIST='/etc/apt/sources.list.d/xanmod-release.list'
+
+# _cpu_psabi_level — x86-64 microarchitecture level (1-4) for the right
+# XanMod package variant.
+_cpu_psabi_level() {
+  local flags
+  flags=" $(awk -F': ' '/^flags/ {print $2; exit}' /proc/cpuinfo 2>/dev/null) "
+  if [[ $flags == *' avx512f '* && $flags == *' avx512bw '* ]]; then
+    printf '4'
+  elif [[ $flags == *' avx2 '* && $flags == *' bmi2 '* ]]; then
+    printf '3'
+  elif [[ $flags == *' sse4_2 '* && $flags == *' popcnt '* ]]; then
+    printf '2'
+  else
+    printf '1'
+  fi
+}
+
+kernel_xanmod_install() {
+  ui_section "XanMod kernel / BBRv3 — ADVANCED"
+  printf '%sThis REPLACES the distribution kernel.%s Risks: exotic VPS images or\n' "$C_WARN" "$C_RESET"
+  printf 'custom drivers may fail to boot; a provider rescue console is your safety\n'
+  printf 'net. Benefit: BBRv3 congestion control (not available in stock kernels).\n'
+  ui_hr
+
+  if ! has_cmd apt-get; then
+    log_error "XanMod install is only supported on apt-based systems (Debian/Ubuntu)."
+    return 0
+  fi
+  if ! has_cmd curl || ! has_cmd gpg; then
+    log_error "curl and gpg are required for the XanMod repository setup."
+    return 0
+  fi
+  if [[ "$(detect_virt)" == "openvz" || "$(detect_virt)" == "lxc" ]]; then
+    log_error "Container virtualization ($(detect_virt)) cannot change its kernel."
+    return 0
+  fi
+
+  ui_confirm "I understand this replaces the kernel and needs a reboot. Continue?" || return 0
+  local level
+  level="$(_cpu_psabi_level)"
+  printf 'CPU supports microarchitecture level: x64v%s\n' "$level"
+  ui_confirm "Install linux-xanmod-x64v${level} now? (several minutes)" || return 0
+
+  st_track_file "$ST_XANMOD_KEYRING"
+  if ! curl -fsSL --max-time 30 'https://dl.xanmod.org/archive.key' 2>>"$ST_LOG_FILE" |
+    gpg --dearmor --yes -o "$ST_XANMOD_KEYRING" 2>>"$ST_LOG_FILE"; then
+    log_error "Could not fetch the XanMod signing key — nothing changed."
+    return 0
+  fi
+
+  st_track_file "$ST_XANMOD_LIST"
+  printf 'deb [signed-by=%s] http://deb.xanmod.org releases main\n' \
+    "$ST_XANMOD_KEYRING" >"$ST_XANMOD_LIST"
+
+  export DEBIAN_FRONTEND=noninteractive
+  printf 'Updating package index and installing (watch %s for details)...\n' "$ST_LOG_FILE"
+  if ! apt-get update -qq >>"$ST_LOG_FILE" 2>&1 ||
+    ! apt-get install -y "linux-xanmod-x64v${level}" >>"$ST_LOG_FILE" 2>&1; then
+    log_error "XanMod installation failed — see the log. Repo files can be rolled back."
+    return 0
+  fi
+
+  printf '%sXanMod kernel installed.%s Reboot to activate it; BBRv3 registers as\n' "$C_OK" "$C_RESET"
+  printf '"bbr", so the existing sysctl config uses it automatically. Verify after\n'
+  printf 'reboot with: uname -r  and  sysctl net.ipv4.tcp_congestion_control\n'
+  log_info "XanMod linux-xanmod-x64v${level} installed (reboot pending)."
 }
 
 # ------------------------- src/modules/tools.sh -------------------------
@@ -1632,8 +1936,51 @@ tools_listening_ports() {
     printf 'ss (iproute2) is not available.\n'
     return 0
   fi
-  # Display-only snapshot; truncated to keep the screen readable.
-  ss -tulnp 2>/dev/null | head -30 || log_warn "Could not list sockets."
+  # Display-only snapshot, capped with awk: `head` would SIGPIPE ss under
+  # pipefail and turn a fine listing into a spurious warning.
+  ss -tulnp 2>/dev/null | awk 'NR <= 30' || log_warn "Could not list sockets."
+}
+
+# tools_report — plain-text support bundle (also behind --report). Printed
+# to stdout AND saved, so users can paste it into an issue/ticket directly.
+tools_report() {
+  local out="${ST_LIB_DIR}/report-${ST_RUN_ID}.txt"
+  {
+    printf '=== %s support report v%s — %s ===\n\n' "$ST_NAME" "$ST_VERSION" "$(date '+%F %T')"
+    printf -- '--- System\n'
+    printf 'OS: %s\nKernel: %s\nVirt: %s\nUptime: %s\n' \
+      "$(os_pretty_name)" "$(kernel_release)" "$(detect_virt)" "$(uptime_pretty)"
+    printf 'CPU: %s (%s cores)\nRAM: %s MB\nLoad: %s\n\n' \
+      "$(cpu_model)" "$(cpu_cores)" "$(mem_total_mb)" "$(load_avg)"
+    printf -- '--- Workload\n'
+    printf 'Detected: %s\n' "$(detect_summary)"
+    printf 'Saved profile/tier: %s / %s\n\n' \
+      "$(config_get last_profile none)" "$(config_get last_tier -)"
+    printf -- '--- Kernel tuning (live)\n'
+    local key
+    for key in net.ipv4.tcp_congestion_control net.core.default_qdisc \
+      net.ipv4.tcp_mtu_probing net.ipv4.ip_forward net.ipv6.conf.all.forwarding \
+      net.core.somaxconn net.core.rmem_max net.netfilter.nf_conntrack_max \
+      net.netfilter.nf_conntrack_count fs.file-max vm.swappiness; do
+      printf '%s = %s\n' "$key" "$(sysctl_get "$key")"
+    done
+    printf '\n'
+    printf -- '--- Swap\n'
+    if [[ -r /proc/swaps ]]; then cat /proc/swaps; else printf 'unavailable\n'; fi
+    printf '\n'
+    printf -- '--- Manifest (last 15 changes)\n'
+    if [[ -f $ST_MANIFEST_FILE ]]; then
+      awk 'NR > 1' "$ST_MANIFEST_FILE" | tail -n 15
+    else
+      printf 'no manifest yet\n'
+    fi
+    printf '\n'
+    printf -- '--- Log (last 30 lines)\n'
+    if [[ -f $ST_LOG_FILE ]]; then tail -n 30 "$ST_LOG_FILE"; else printf 'no log yet\n'; fi
+    printf '\n=== end of report ===\n'
+  } | tee "$out"
+  printf '\n%sSaved:%s %s\n' "$C_OK" "$C_RESET" "$out"
+  log_info "Support report written to ${out}."
 }
 
 tools_menu() {
@@ -1647,6 +1994,8 @@ tools_menu() {
     ui_menu_item 4 "Listening ports" "ss -tulnp snapshot"
     ui_menu_item 5 "MSS clamping" "fix 'VPN connects but no sites' (WireGuard/NAT)"
     ui_menu_item 6 "Docker+UFW audit" "check the firewall bypass"
+    ui_menu_item 7 "Support report" "full plain-text dump for issues/tickets"
+    ui_menu_item 8 "XanMod kernel (BBRv3)" "ADVANCED — replaces the kernel"
     ui_menu_item 0 "Back"
     ui_hr
     read -rp "Select: " choice || return 0
@@ -1673,6 +2022,14 @@ tools_menu() {
         ;;
       6)
         vpn_docker_ufw_audit
+        ui_pause
+        ;;
+      7)
+        tools_report
+        ui_pause
+        ;;
+      8)
+        kernel_xanmod_install
         ui_pause
         ;;
       0) return 0 ;;
@@ -1765,7 +2122,7 @@ st_self_install() {
 }
 
 st_self_update() {
-  local target new_ver tmp="${ST_LIB_DIR}/update.$$"
+  local target new_ver staged="${ST_LIB_DIR}/update.$$"
   if [[ -f $ST_INSTALL_PATH ]]; then
     target="$ST_INSTALL_PATH"
   elif ! target="$(_self_source_path)"; then
@@ -1773,32 +2130,24 @@ st_self_update() {
     return 1
   fi
 
-  if ! has_cmd curl; then
-    log_error "curl is required for self-update."
+  # Single download: fetch once through the verifying path into a staging
+  # file, read its version, and promote that exact verified file.
+  _self_download "$staged" || return 1
+
+  new_ver="$(grep -oE 'ST_VERSION="[^"]+"' "$staged" | head -n1 | cut -d'"' -f2)" || new_ver=''
+  if [[ -z $new_ver ]]; then
+    rm -f "$staged"
+    log_error "Could not read the downloaded version — aborting."
     return 1
   fi
-  if curl -fsSL --max-time 60 "$ST_URL_RELEASE" -o "$tmp" 2>>"$ST_LOG_FILE" ||
-    curl -fsSL --max-time 60 "$ST_URL_RAW" -o "$tmp" 2>>"$ST_LOG_FILE"; then
-    new_ver="$(grep -oE 'ST_VERSION="[^"]+"' "$tmp" | head -n1 | cut -d'"' -f2)" || new_ver=''
-    if [[ -z $new_ver ]]; then
-      rm -f "$tmp"
-      log_error "Could not read the downloaded version — aborting."
-      return 1
-    fi
-    if [[ $new_ver == "$ST_VERSION" ]]; then
-      printf 'Already up to date (v%s).\n' "$ST_VERSION"
-      rm -f "$tmp"
-      return 0
-    fi
-    rm -f "$tmp" # re-download through the verifying path below
-  else
-    rm -f "$tmp"
-    log_error "Update check failed — see the log."
-    return 1
+  if [[ $new_ver == "$ST_VERSION" ]]; then
+    printf 'Already up to date (v%s).\n' "$ST_VERSION"
+    rm -f "$staged"
+    return 0
   fi
 
   st_track_file "$target"
-  _self_download "$target" || return 1
+  mv -f "$staged" "$target"
   chmod 755 "$target"
   printf '%sUpdated:%s v%s -> v%s (%s)\n' "$C_OK" "$C_RESET" "$ST_VERSION" "$new_ver" "$target"
   log_info "Self-updated: v${ST_VERSION} -> v${new_ver}."
@@ -1903,8 +2252,56 @@ _optimize_run() {
   ((with_swap)) && st_run_step "Swap file" swap_apply
   ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
   st_report_summary
+  _offer_service_restart
   config_set last_profile "$ST_PROFILE"
   config_set last_tier "$ST_TIER"
+  return 0
+}
+
+# _offer_service_restart — running services keep their old nofile limit
+# until restarted; offer to restart detected VPN workloads (interactive),
+# or just say so honestly (batch).
+_offer_service_restart() {
+  ((ST_LIMITS_CHANGED)) || return 0
+
+  local containers=''
+  if has_cmd docker; then
+    # grep exit 1 (no match) is a normal outcome here, not an error.
+    containers="$(docker ps --format '{{.Names}}' 2>/dev/null |
+      grep -iE 'marzban|pg[-_]?node|pasarguard|x-?ui|xray|hiddify|sing-?box|hysteria|wg' || true)"
+  fi
+
+  if ((ST_OPT_BATCH)); then
+    if [[ -n $containers ]]; then
+      printf '%sNote:%s restart these containers so they pick up the new nofile limit:\n  %s\n' \
+        "$C_WARN" "$C_RESET" "$(tr '\n' ' ' <<<"$containers")"
+    fi
+    return 0
+  fi
+
+  local name
+  for name in $containers; do # global IFS splits on newlines — one name per entry
+    if ui_confirm "Restart container '${name}' now so it picks up the new limits?"; then
+      if docker restart "$name" >/dev/null 2>>"$ST_LOG_FILE"; then
+        printf '%sRestarted:%s %s\n' "$C_OK" "$C_RESET" "$name"
+      else
+        log_warn "Could not restart ${name}."
+      fi
+    fi
+  done
+
+  local svc
+  for svc in xray x-ui sing-box hysteria-server; do
+    if has_cmd systemctl && systemctl is-active --quiet "$svc" 2>/dev/null; then
+      if ui_confirm "Restart service '${svc}' now so it picks up the new limits?"; then
+        if systemctl restart "$svc" 2>>"$ST_LOG_FILE"; then
+          printf '%sRestarted:%s %s\n' "$C_OK" "$C_RESET" "$svc"
+        else
+          log_warn "Could not restart ${svc}."
+        fi
+      fi
+    fi
+  done
   return 0
 }
 
@@ -1935,10 +2332,9 @@ quick_optimize() {
   ui_pause
 }
 
-# auto_optimize — the non-interactive flow behind --auto. No prompts: DNS is
-# only touched when --dns was given; invalid values die with a clear message.
-auto_optimize() {
-  detect_stack
+# _apply_cli_profile_tier — resolve profile/tier honouring --profile/--tier
+# overrides; invalid values die with a clear message. Shared by auto+dry-run.
+_apply_cli_profile_tier() {
   if [[ -n $ST_AUTO_PROFILE ]]; then
     case "$ST_AUTO_PROFILE" in
       general | vpn-node | wireguard | panel | full)
@@ -1958,6 +2354,13 @@ auto_optimize() {
       *) die "Invalid --tier '${ST_AUTO_TIER}' (S|M|L|XL)." ;;
     esac
   fi
+}
+
+# auto_optimize — the non-interactive flow behind --auto. No prompts: DNS is
+# only touched when --dns was given.
+auto_optimize() {
+  detect_stack
+  _apply_cli_profile_tier
 
   local with_dns=0
   if [[ -n $ST_AUTO_DNS ]]; then
@@ -1969,6 +2372,19 @@ auto_optimize() {
   ui_title "Auto Optimize (non-interactive)"
   _optimize_show_plan
   _optimize_run "$with_dns" "$ST_AUTO_SWAP" "$ST_AUTO_LIMITS" "$ST_AUTO_EXTRAS"
+}
+
+# dry_run_optimize — --dry-run: show the plan and the exact sysctl diff,
+# apply absolutely nothing.
+dry_run_optimize() {
+  detect_stack
+  _apply_cli_profile_tier
+  ui_title "Dry Run — nothing will be applied"
+  _optimize_show_plan
+  ui_hr
+  sysctl_dry_run
+  printf '\nA real run would also cover: nofile limits, journald cap & NTP, swap%s.\n' \
+    "$([[ -n $ST_AUTO_DNS ]] && printf ', DNS')"
 }
 
 custom_optimize() {
@@ -2157,6 +2573,8 @@ Usage: server-tools.sh [OPTIONS]   (installed: st [OPTIONS])
 Actions (no action starts the interactive menu):
   --status              Print the full system status report and exit
   --auto                Non-interactive optimize: base layer + detected profile
+  --dry-run             Show the plan and exact sysctl diff, apply NOTHING
+  --report              Print + save a plain-text support report
   --rollback            Revert the latest recorded run and exit
   --install             Install as the 'st' command (/usr/local/bin/st)
   --update              Self-update from the latest GitHub release
@@ -2203,6 +2621,8 @@ main() {
       --status) action="status" ;;
       --rollback) action="rollback" ;;
       --auto) action="auto" ;;
+      --dry-run) action="dryrun" ;;
+      --report) action="report" ;;
       --install) action="install" ;;
       --update) action="update" ;;
       --profile)
@@ -2254,6 +2674,15 @@ main() {
     auto)
       ST_OPT_BATCH=1
       auto_optimize
+      ;;
+    dryrun)
+      ST_OPT_BATCH=1
+      dry_run_optimize
+      ;;
+    report)
+      ST_OPT_BATCH=1
+      detect_stack
+      tools_report
       ;;
     install)
       ST_OPT_BATCH=1

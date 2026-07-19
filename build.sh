@@ -30,6 +30,7 @@ SOURCES=(
   modules/extras.sh
   modules/security.sh
   modules/vpn.sh
+  modules/kernel.sh
   modules/tools.sh
   modules/selfupdate.sh
   modules/optimize.sh

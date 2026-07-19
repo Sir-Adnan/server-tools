@@ -63,6 +63,7 @@ ui_menu_item() {
 }
 
 ui_logo() {
+  # clear can fail on TERM=dumb / weird terminals — purely cosmetic.
   ((ST_OPT_BATCH)) || clear 2>/dev/null || true
   printf '%s' "$C_TITLE"
   cat <<'LOGO'

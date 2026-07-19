@@ -8,7 +8,12 @@
 readonly ST_LIMITS_FILE='/etc/security/limits.d/99-server-tools.conf'
 readonly ST_SYSTEMD_DROPIN='/etc/systemd/system.conf.d/99-server-tools.conf'
 
+# Set when limits were (re)written this run — running services keep their
+# old nofile until restarted, so the optimizer offers a restart afterwards.
+ST_LIMITS_CHANGED=0
+
 limits_apply() {
+  ST_LIMITS_CHANGED=1
   st_track_file "$ST_LIMITS_FILE"
   mkdir -p "$(dirname "$ST_LIMITS_FILE")"
   cat >"$ST_LIMITS_FILE" <<EOF

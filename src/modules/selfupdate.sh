@@ -79,7 +79,7 @@ st_self_install() {
 }
 
 st_self_update() {
-  local target new_ver tmp="${ST_LIB_DIR}/update.$$"
+  local target new_ver staged="${ST_LIB_DIR}/update.$$"
   if [[ -f $ST_INSTALL_PATH ]]; then
     target="$ST_INSTALL_PATH"
   elif ! target="$(_self_source_path)"; then
@@ -87,32 +87,24 @@ st_self_update() {
     return 1
   fi
 
-  if ! has_cmd curl; then
-    log_error "curl is required for self-update."
+  # Single download: fetch once through the verifying path into a staging
+  # file, read its version, and promote that exact verified file.
+  _self_download "$staged" || return 1
+
+  new_ver="$(grep -oE 'ST_VERSION="[^"]+"' "$staged" | head -n1 | cut -d'"' -f2)" || new_ver=''
+  if [[ -z $new_ver ]]; then
+    rm -f "$staged"
+    log_error "Could not read the downloaded version — aborting."
     return 1
   fi
-  if curl -fsSL --max-time 60 "$ST_URL_RELEASE" -o "$tmp" 2>>"$ST_LOG_FILE" ||
-    curl -fsSL --max-time 60 "$ST_URL_RAW" -o "$tmp" 2>>"$ST_LOG_FILE"; then
-    new_ver="$(grep -oE 'ST_VERSION="[^"]+"' "$tmp" | head -n1 | cut -d'"' -f2)" || new_ver=''
-    if [[ -z $new_ver ]]; then
-      rm -f "$tmp"
-      log_error "Could not read the downloaded version — aborting."
-      return 1
-    fi
-    if [[ $new_ver == "$ST_VERSION" ]]; then
-      printf 'Already up to date (v%s).\n' "$ST_VERSION"
-      rm -f "$tmp"
-      return 0
-    fi
-    rm -f "$tmp" # re-download through the verifying path below
-  else
-    rm -f "$tmp"
-    log_error "Update check failed — see the log."
-    return 1
+  if [[ $new_ver == "$ST_VERSION" ]]; then
+    printf 'Already up to date (v%s).\n' "$ST_VERSION"
+    rm -f "$staged"
+    return 0
   fi
 
   st_track_file "$target"
-  _self_download "$target" || return 1
+  mv -f "$staged" "$target"
   chmod 755 "$target"
   printf '%sUpdated:%s v%s -> v%s (%s)\n' "$C_OK" "$C_RESET" "$ST_VERSION" "$new_ver" "$target"
   log_info "Self-updated: v${ST_VERSION} -> v${new_ver}."

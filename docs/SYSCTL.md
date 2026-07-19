@@ -40,7 +40,12 @@ BBR persistence: `tcp_bbr` in `/etc/modules-load.d/server-tools.conf`
 | `net.ipv4.tcp_no_metrics_save` | `1` | don't poison future connections with bad-path metrics |
 | `net.ipv4.tcp_fastopen` | `3` | harmless enable both directions |
 | `net.ipv4.tcp_notsent_lowat` | `16384` | caps unsent-buffer depth — lower proxy latency (Cloudflare-documented) |
+| `net.ipv4.tcp_rfc1337` | `1` | protects TIME-WAIT sockets from RST assassination |
 | `net.ipv4.tcp_mtu_probing` | `1` | **changed vs legacy (was 0)** — mode 1 activates only after a blackhole is detected, preventing stalls on ICMP-filtered paths; the harmful aggressive mode is `2` |
+
+Applying qdisc live: `default_qdisc` only affects new interfaces, so the
+module also runs `tc qdisc replace` on the default interface — no reboot
+needed for the switch to fq.
 
 ### Buffers (TIER-scaled)
 
@@ -52,6 +57,20 @@ BBR persistence: `tcp_bbr` in `/etc/modules-load.d/server-tools.conf`
 | `net.core.rmem_default` / `wmem_default` | `262144` | sane default without autotuning |
 | `net.ipv4.udp_rmem_min` / `udp_wmem_min` | `16384` | UDP floor under memory pressure (WireGuard/Hysteria2) |
 | `net.ipv4.udp_mem` | scaled to RAM | QUIC/Hysteria2 total UDP memory |
+| `net.core.optmem_max` | `65536` | per-socket ancillary buffer headroom |
+
+### High-churn caps (L / XL only)
+
+| Key | L / XL | Why |
+| --- | --- | --- |
+| `net.ipv4.tcp_max_tw_buckets` | 524288 / 1048576 | cap TIME-WAIT memory under mass reconnects |
+| `net.ipv4.tcp_max_orphans` | 131072 / 262144 | cap orphaned-socket memory under churn |
+
+### Reserved service ports (dynamic)
+
+`net.ipv4.ip_local_reserved_ports` is generated at apply time from the
+listening ports that fall inside our ephemeral range (10240-65535, up to 32
+entries) — an outgoing connection can then never grab a panel/node port.
 
 ### System capacity
 

@@ -14,6 +14,8 @@ Usage: server-tools.sh [OPTIONS]   (installed: st [OPTIONS])
 Actions (no action starts the interactive menu):
   --status              Print the full system status report and exit
   --auto                Non-interactive optimize: base layer + detected profile
+  --dry-run             Show the plan and exact sysctl diff, apply NOTHING
+  --report              Print + save a plain-text support report
   --rollback            Revert the latest recorded run and exit
   --install             Install as the 'st' command (/usr/local/bin/st)
   --update              Self-update from the latest GitHub release
@@ -60,6 +62,8 @@ main() {
       --status) action="status" ;;
       --rollback) action="rollback" ;;
       --auto) action="auto" ;;
+      --dry-run) action="dryrun" ;;
+      --report) action="report" ;;
       --install) action="install" ;;
       --update) action="update" ;;
       --profile)
@@ -111,6 +115,15 @@ main() {
     auto)
       ST_OPT_BATCH=1
       auto_optimize
+      ;;
+    dryrun)
+      ST_OPT_BATCH=1
+      dry_run_optimize
+      ;;
+    report)
+      ST_OPT_BATCH=1
+      detect_stack
+      tools_report
       ;;
     install)
       ST_OPT_BATCH=1
