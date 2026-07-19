@@ -4,9 +4,9 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 2.0.0-dev
+## [2.0.0] — 2026-07-19
 
-Full rewrite ("ServerTools v2").
+First stable release of the full rewrite ("ServerTools v2").
 
 ### Added — hardening & pro-features round
 
@@ -134,11 +134,6 @@ Full rewrite ("ServerTools v2").
 - Legacy scripts (`opt.sh` V15.2.0, `opt-gcore.sh` V11) moved to `legacy/` and
   frozen. Their old raw-URL install paths changed accordingly.
 
-### Planned (next phases)
+### Planned
 
-- Phase 2: optimization modules (sysctl, DNS, swap, limits) with layered
-  profiles and capacity tiers (spec in `docs/SYSCTL.md` / `docs/PROFILES.md`).
-- Phase 3: security module (UFW/fail2ban/SSH), VPN-aware tuning
-  (IPv6 forwarding, MSS clamping, Docker+UFW), network test tools.
-- Phase 4: `--auto` non-interactive mode, `st` installer command, self-update,
-  first stable release.
+Future ideas and release criteria live in `ROADMAP.md`.
