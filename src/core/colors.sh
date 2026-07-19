@@ -30,15 +30,18 @@ ui_detect_terminal() {
   ((want_color)) || return 0
 
   C_RESET=$'\033[0m'
+  # C_BOLD/C_DIM: kept so the palette is complete for future modules.
+  # shellcheck disable=SC2034
   C_BOLD=$'\033[1m'
+  # shellcheck disable=SC2034
   C_DIM=$'\033[2m'
 
   # Classic (non-bright) ANSI colors — stable across terminal themes.
-  C_TITLE=$'\033[1;36m' # bold cyan   — screen titles, banner
-  C_KEY=$'\033[1;34m'   # bold blue   — menu keys, kv labels
+  C_TITLE=$'\033[1;36m'  # bold cyan   — screen titles, banner
+  C_KEY=$'\033[1;34m'    # bold blue   — menu keys, kv labels
   C_ACCENT=$'\033[1;35m' # bold magenta — highlights
-  C_LINE=$'\033[0;34m'  # blue        — separators
-  C_MUTED=$'\033[2m'    # dim         — hints, secondary text
+  C_LINE=$'\033[0;34m'   # blue        — separators
+  C_MUTED=$'\033[2m'     # dim         — hints, secondary text
   C_OK=$'\033[1;32m'
   C_WARN=$'\033[1;33m'
   C_ERR=$'\033[1;31m'

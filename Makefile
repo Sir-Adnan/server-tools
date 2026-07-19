@@ -3,7 +3,7 @@ SHELL := /usr/bin/env bash
 .PHONY: build lint fmt test clean
 
 build:
-	./build.sh
+	bash build.sh
 
 lint: build
 	shellcheck dist/server-tools.sh build.sh tests/smoke.sh
@@ -13,7 +13,7 @@ fmt:
 	shfmt -i 2 -ci -w src build.sh tests
 
 test:
-	./tests/smoke.sh
+	bash tests/smoke.sh
 
 clean:
 	rm -f dist/server-tools.sh

@@ -8,6 +8,8 @@
 # ============================================================================
 
 readonly ST_MSS_UNIT='/etc/systemd/system/server-tools-mss.service'
+# The comma in SYN,RST is iptables syntax, not an array-separator mistake.
+# shellcheck disable=SC2054
 readonly -a ST_MSS_RULE=(
   FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 )

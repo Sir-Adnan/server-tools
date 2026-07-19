@@ -14,7 +14,8 @@ fail() {
   exit 1
 }
 
-"${ROOT_DIR}/build.sh" >/dev/null
+# Invoke via bash so the test never depends on the exec bit surviving checkout.
+bash "${ROOT_DIR}/build.sh" >/dev/null
 
 bash -n "$DIST" || fail "dist does not parse"
 
