@@ -851,12 +851,57 @@ tier_compute() {
   if [[ $ST_PROFILE == panel && ($ST_TIER == L || $ST_TIER == XL) ]]; then
     tier_set M
   fi
+
+  capacity_apply_users
   return 0
 }
 
 tier_conntrack_ram_mb() {
   # ~300 bytes per conntrack entry, worst case (table full).
   printf '%d' $((ST_CONNTRACK * 300 / 1048576))
+}
+
+# --- User-based capacity model -------------------------------------------
+# Conntrack demand follows the ACTIVE USER COUNT, not RAM: ~24 flows per
+# online user × 1.5 headroom. RAM still sizes the buffers, and the honest
+# feasibility check below warns when the combination cannot fit.
+
+ST_EXPECTED_USERS=0
+
+# capacity_apply_users — override ST_CONNTRACK from expected users (config
+# key expected_users; the --users CLI flag wins when given). No-op when 0.
+capacity_apply_users() {
+  local users ct
+  users="$(config_get expected_users 0)"
+  if [[ ${ST_AUTO_USERS:-} =~ ^[0-9]+$ ]] && ((${ST_AUTO_USERS:-0} > 0)); then
+    users="$ST_AUTO_USERS"
+  fi
+  [[ $users =~ ^[0-9]+$ ]] || users=0
+  ST_EXPECTED_USERS="$users"
+  ((users > 0)) || return 0
+
+  ct=$((users * 24 * 3 / 2))
+  ((ct < 65536)) && ct=65536
+  ((ct > 4194304)) && ct=4194304
+  ST_CONNTRACK="$ct"
+  return 0
+}
+
+# capacity_warning — prints an honest RAM-math warning when the estimated
+# need (conntrack + ~0.5 MB proxy userspace per online user) crowds >75% of
+# RAM; prints nothing when the sizing fits.
+capacity_warning() {
+  ((ST_EXPECTED_USERS > 0)) || return 0
+  local ram_mb ct_mb proxy_mb need_mb
+  ram_mb="$(mem_total_mb)"
+  ct_mb=$((ST_CONNTRACK * 300 / 1048576))
+  proxy_mb=$((ST_EXPECTED_USERS / 2))
+  need_mb=$((ct_mb + proxy_mb))
+  if ((ram_mb > 0 && need_mb > ram_mb * 3 / 4)); then
+    printf 'estimated need ~%d MB (conntrack %d + proxy ~%d) vs %d MB RAM — OOM risk at peak. Split users across nodes or add RAM (rule of thumb: ~8 GB per 10k users).' \
+      "$need_mb" "$ct_mb" "$proxy_mb" "$ram_mb"
+  fi
+  return 0
 }
 
 # ------------------------- src/modules/sysctl.sh -------------------------
@@ -950,6 +995,16 @@ net.core.optmem_max = 65536
 fs.file-max = 2097152
 vm.swappiness = 10
 EOF
+
+  # User-based capacity mode: bound total TCP memory explicitly so buffer
+  # autotuning can never crowd a small-RAM host out of userspace memory.
+  if ((ST_EXPECTED_USERS > 0)); then
+    cat <<EOF
+
+# --- TCP memory bounds (user-based capacity mode: ${ST_EXPECTED_USERS} users)
+net.ipv4.tcp_mem = $((ram_pages * 10 / 100)) $((ram_pages * 13 / 100)) $((ram_pages * 16 / 100))
+EOF
+  fi
 
   # High-churn caps only where the connection volume justifies them.
   if [[ $ST_TIER == L || $ST_TIER == XL ]]; then
@@ -2170,6 +2225,7 @@ ST_STEP_TOTAL=0
 # --auto flags, filled by the CLI parser in 99-main.sh.
 ST_AUTO_PROFILE=''
 ST_AUTO_TIER=''
+ST_AUTO_USERS=''
 ST_AUTO_DNS=''
 ST_AUTO_SWAP=1
 ST_AUTO_LIMITS=1
@@ -2231,12 +2287,23 @@ st_report_summary() {
 
 _optimize_show_plan() {
   ui_kv "Profile" "${ST_PROFILE} (${ST_PROFILE_SOURCE})"
-  ui_kv "Capacity tier" "${ST_TIER} — up to ${ST_TIER_USERS} concurrent users"
+  if ((ST_EXPECTED_USERS > 0)); then
+    ui_kv "Capacity" "${ST_EXPECTED_USERS} expected users (conntrack sized from users; buffers from RAM tier ${ST_TIER})"
+  else
+    ui_kv "Capacity tier" "${ST_TIER} — up to ${ST_TIER_USERS} concurrent users"
+  fi
   if profile_wants_forwarding; then
     ui_kv "Conntrack" "${ST_CONNTRACK} entries (~$(tier_conntrack_ram_mb) MB kernel RAM worst case)"
   fi
   ui_kv "Socket buffers" "up to ${ST_BUF_MB} MB per socket"
   ui_kv "Congestion" "BBR when the kernel supports it, else cubic"
+
+  local warn
+  warn="$(capacity_warning)"
+  if [[ -n $warn ]]; then
+    printf '  %sCapacity warning:%s %s\n' "$C_WARN" "$C_RESET" "$warn"
+    log_info "capacity warning: ${warn}"
+  fi
 }
 
 # _optimize_run WITH_DNS WITH_SWAP WITH_LIMITS WITH_EXTRAS  (each 0/1)
@@ -2347,10 +2414,17 @@ _apply_cli_profile_tier() {
     profile_resolve_auto
   fi
 
+  if [[ -n $ST_AUTO_USERS && ! $ST_AUTO_USERS =~ ^[0-9]+$ ]]; then
+    die "Invalid --users '${ST_AUTO_USERS}' (expected a number)."
+  fi
+
   tier_compute
   if [[ -n $ST_AUTO_TIER ]]; then
     case "$ST_AUTO_TIER" in
-      S | M | L | XL) tier_set "$ST_AUTO_TIER" ;;
+      S | M | L | XL)
+        tier_set "$ST_AUTO_TIER"
+        capacity_apply_users # a manual tier must not silently drop the users model
+        ;;
       *) die "Invalid --tier '${ST_AUTO_TIER}' (S|M|L|XL)." ;;
     esac
   fi
@@ -2422,6 +2496,13 @@ custom_optimize() {
       config_set capacity_tier "${tier_choice^^}"
       ;;
   esac
+
+  local users_in
+  read -rp "Expected concurrent users [Enter=size by RAM, 0=reset saved value]: " users_in || users_in=''
+  if [[ $users_in =~ ^[0-9]+$ ]]; then
+    config_set expected_users "$users_in"
+  fi
+  capacity_apply_users
 
   ui_hr
   _optimize_show_plan
@@ -2582,6 +2663,8 @@ Actions (no action starts the interactive menu):
 Options for --auto:
   --profile NAME        general | vpn-node | wireguard | panel | full
   --tier T              Capacity tier: S | M | L | XL (default: by RAM)
+  --users N             Expected concurrent users — sizes conntrack from the
+                        real user count instead of RAM (with a RAM warning)
   --dns VALUE           Provider (cloudflare|google|quad9|opendns|shecan)
                         or custom "primary,secondary" (skipped when omitted)
   --no-swap             Skip the swap step
@@ -2634,6 +2717,11 @@ main() {
         _need_value "$1" "${2:-}"
         shift
         ST_AUTO_TIER="${1^^}"
+        ;;
+      --users)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_USERS="$1"
         ;;
       --dns)
         _need_value "$1" "${2:-}"

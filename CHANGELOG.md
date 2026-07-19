@@ -10,6 +10,13 @@ Full rewrite ("ServerTools v2").
 
 ### Added — hardening & pro-features round
 
+- User-based capacity model: `--users N` (or the `expected_users` config
+  key, asked in Custom Optimize) sizes conntrack from the real user count
+  instead of RAM, bounds `tcp_mem` explicitly, and prints an honest
+  RAM-feasibility warning with numbers (docs/PROFILES.md).
+- Persian documentation: full step-by-step usage guide `docs/GUIDE.md`
+  (RTL layout with LTR command blocks); README reworked to proper RTL.
+
 - `--dry-run`: renders the exact sysctl file for the resolved profile/tier
   and diffs every key against the live kernel — applies nothing.
 - `--report` / Tools menu: plain-text support report (system, workload,

@@ -90,6 +90,16 @@ fs.file-max = 2097152
 vm.swappiness = 10
 EOF
 
+  # User-based capacity mode: bound total TCP memory explicitly so buffer
+  # autotuning can never crowd a small-RAM host out of userspace memory.
+  if ((ST_EXPECTED_USERS > 0)); then
+    cat <<EOF
+
+# --- TCP memory bounds (user-based capacity mode: ${ST_EXPECTED_USERS} users)
+net.ipv4.tcp_mem = $((ram_pages * 10 / 100)) $((ram_pages * 13 / 100)) $((ram_pages * 16 / 100))
+EOF
+  fi
+
   # High-churn caps only where the connection volume justifies them.
   if [[ $ST_TIER == L || $ST_TIER == XL ]]; then
     local tw_buckets=524288 max_orphans=131072

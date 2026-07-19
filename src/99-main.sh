@@ -23,6 +23,8 @@ Actions (no action starts the interactive menu):
 Options for --auto:
   --profile NAME        general | vpn-node | wireguard | panel | full
   --tier T              Capacity tier: S | M | L | XL (default: by RAM)
+  --users N             Expected concurrent users — sizes conntrack from the
+                        real user count instead of RAM (with a RAM warning)
   --dns VALUE           Provider (cloudflare|google|quad9|opendns|shecan)
                         or custom "primary,secondary" (skipped when omitted)
   --no-swap             Skip the swap step
@@ -75,6 +77,11 @@ main() {
         _need_value "$1" "${2:-}"
         shift
         ST_AUTO_TIER="${1^^}"
+        ;;
+      --users)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_USERS="$1"
         ;;
       --dns)
         _need_value "$1" "${2:-}"

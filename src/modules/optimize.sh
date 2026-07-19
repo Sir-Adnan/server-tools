@@ -15,6 +15,7 @@ ST_STEP_TOTAL=0
 # --auto flags, filled by the CLI parser in 99-main.sh.
 ST_AUTO_PROFILE=''
 ST_AUTO_TIER=''
+ST_AUTO_USERS=''
 ST_AUTO_DNS=''
 ST_AUTO_SWAP=1
 ST_AUTO_LIMITS=1
@@ -76,12 +77,23 @@ st_report_summary() {
 
 _optimize_show_plan() {
   ui_kv "Profile" "${ST_PROFILE} (${ST_PROFILE_SOURCE})"
-  ui_kv "Capacity tier" "${ST_TIER} — up to ${ST_TIER_USERS} concurrent users"
+  if ((ST_EXPECTED_USERS > 0)); then
+    ui_kv "Capacity" "${ST_EXPECTED_USERS} expected users (conntrack sized from users; buffers from RAM tier ${ST_TIER})"
+  else
+    ui_kv "Capacity tier" "${ST_TIER} — up to ${ST_TIER_USERS} concurrent users"
+  fi
   if profile_wants_forwarding; then
     ui_kv "Conntrack" "${ST_CONNTRACK} entries (~$(tier_conntrack_ram_mb) MB kernel RAM worst case)"
   fi
   ui_kv "Socket buffers" "up to ${ST_BUF_MB} MB per socket"
   ui_kv "Congestion" "BBR when the kernel supports it, else cubic"
+
+  local warn
+  warn="$(capacity_warning)"
+  if [[ -n $warn ]]; then
+    printf '  %sCapacity warning:%s %s\n' "$C_WARN" "$C_RESET" "$warn"
+    log_info "capacity warning: ${warn}"
+  fi
 }
 
 # _optimize_run WITH_DNS WITH_SWAP WITH_LIMITS WITH_EXTRAS  (each 0/1)
@@ -192,10 +204,17 @@ _apply_cli_profile_tier() {
     profile_resolve_auto
   fi
 
+  if [[ -n $ST_AUTO_USERS && ! $ST_AUTO_USERS =~ ^[0-9]+$ ]]; then
+    die "Invalid --users '${ST_AUTO_USERS}' (expected a number)."
+  fi
+
   tier_compute
   if [[ -n $ST_AUTO_TIER ]]; then
     case "$ST_AUTO_TIER" in
-      S | M | L | XL) tier_set "$ST_AUTO_TIER" ;;
+      S | M | L | XL)
+        tier_set "$ST_AUTO_TIER"
+        capacity_apply_users # a manual tier must not silently drop the users model
+        ;;
       *) die "Invalid --tier '${ST_AUTO_TIER}' (S|M|L|XL)." ;;
     esac
   fi
@@ -267,6 +286,13 @@ custom_optimize() {
       config_set capacity_tier "${tier_choice^^}"
       ;;
   esac
+
+  local users_in
+  read -rp "Expected concurrent users [Enter=size by RAM, 0=reset saved value]: " users_in || users_in=''
+  if [[ $users_in =~ ^[0-9]+$ ]]; then
+    config_set expected_users "$users_in"
+  fi
+  capacity_apply_users
 
   ui_hr
   _optimize_show_plan

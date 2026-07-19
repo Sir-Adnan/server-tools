@@ -52,4 +52,18 @@ estimated kernel memory cost is displayed **before** applying.
 Rule of thumb shown to the user: one conntrack entry ≈ 300 bytes, so a 2M
 table can cost ~600 MB of kernel memory when full.
 
+## User-based capacity model (`expected_users` / `--users`)
+
+Conntrack demand follows the **active user count**, not RAM — a cheap 4 GB
+VPS may carry 10k users. When the user provides an expected count:
+
+- `nf_conntrack_max = users × 24 flows × 1.5 headroom` (clamped 65k–4.2M);
+- buffers stay RAM-tier sized (small RAM keeps small buffer ceilings);
+- `net.ipv4.tcp_mem` is bounded explicitly (~16% of RAM max) so autotuning
+  can never crowd out userspace;
+- an honest feasibility warning fires when
+  `conntrack RAM + ~0.5 MB × users > 75% of RAM`, quoting the numbers and
+  the operational rule of thumb: **~8 GB RAM per 10k concurrent users** —
+  beyond that, split users across nodes instead of squeezing one host.
+
 See `docs/SYSCTL.md` for the per-key values behind each tier.

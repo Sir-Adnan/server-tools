@@ -48,9 +48,6 @@ Quick/Custom Optimize flows with honest per-step outcomes.
   doctor adds re-apply + scheduling-free health verdicts).
 - Before/after snapshot — capture retransmit/drop counters pre-apply so
   `--status` can show the measured effect, not a claim.
-- Capacity model v2 — size conntrack from *expected users* (config
-  `expected_users`) instead of RAM alone, with a RAM-feasibility warning
-  (see the 2-4 GB / 10k-users analysis).
 - ufw-docker integration (actually fix the bypass, not just warn).
 - Panel/node port auto-suggestion for UFW from detected containers.
 - Optional full-IPv6-disable toggle (leak prevention setups).
@@ -60,7 +57,7 @@ Quick/Custom Optimize flows with honest per-step outcomes.
 
 Recently landed from this list: `--dry-run`, `--report`, reserved service
 ports, zram backend, XanMod/BBRv3 installer, DoT + Iranian DNS presets,
-service-restart offer.
+service-restart offer, user-based capacity model (`--users`).
 
 ## Release criteria for v2.0.0
 
