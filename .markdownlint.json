@@ -1,5 +1,6 @@
 {
-  "comment": "MD033/MD041: <div dir=rtl> is required for Persian RTL rendering on GitHub. MD010: the manifest sample in ROLLBACK.md is literally tab-separated.",
+  "comment": "MD013: Persian prose reads naturally as long lines; GitHub wraps. MD033/MD041 kept off for occasional HTML/banners. MD010: the manifest sample in ROLLBACK.md is literally tab-separated.",
+  "MD013": false,
   "MD033": false,
   "MD041": false,
   "MD010": {
