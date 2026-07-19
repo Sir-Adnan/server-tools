@@ -84,6 +84,13 @@ ui_confirm() {
   [[ ${reply,,} == y || ${reply,,} == yes ]]
 }
 
+# ui_confirm_yes PROMPT — like ui_confirm but Enter means yes.
+ui_confirm_yes() {
+  local reply
+  read -rp "$1 [Y/n]: " reply || return 1
+  [[ -z $reply || ${reply,,} == y || ${reply,,} == yes ]]
+}
+
 ui_pause() {
   ((ST_OPT_BATCH)) && return 0
   [[ -t 0 ]] || return 0

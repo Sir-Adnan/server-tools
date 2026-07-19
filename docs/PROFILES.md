@@ -1,6 +1,7 @@
 # Profiles — the layered optimization model
 
-> Status: **specification** — implemented by the Phase 2 modules.
+> Status: **implemented** by `src/modules/profile.sh` + `optimize.sh`
+> (Phase 2). Layer 3 optional modules (UFW/fail2ban/SSH) arrive in Phase 3.
 
 ## Why layers, not exclusive profiles
 
@@ -25,7 +26,7 @@ manual choice) only decides what *extra* specialization goes on top.
 ## Workload profiles (Layer 2)
 
 | Profile | Detected via | Focus |
-|---|---|---|
+| --- | --- | --- |
 | `vpn-node` | `marzban-node`, `pg-node`, `xray`, `x-ui` containers/services | high conntrack, large buffers, forwarding, keepalive tuned for many idle clients |
 | `wireguard` | active `wg` interfaces, wg-dashboard/wg-easy | everything in `vpn-node` **plus** IPv6 forwarding and MSS clamping |
 | `panel` | Marzban/Pasarguard panel containers | modest network tuning; swap and service resilience matter more than throughput |
@@ -42,7 +43,7 @@ The tier is chosen automatically from RAM (overridable by the user), and the
 estimated kernel memory cost is displayed **before** applying.
 
 | Tier | Target concurrent users | Typical RAM | nf_conntrack_max | somaxconn / syn_backlog | rmem/wmem max |
-|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- |
 | S | up to ~1k | ≤ 1 GB | 65,536 | 8,192 | 8 MB |
 | M | up to ~10k | 2–4 GB | 262,144 | 16,384 | 16 MB |
 | L | up to ~100k | 8–16 GB | 1,048,576 (+ explicit buckets) | 32,768 | 32 MB |

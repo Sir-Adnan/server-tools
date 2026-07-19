@@ -247,6 +247,13 @@ ui_confirm() {
   [[ ${reply,,} == y || ${reply,,} == yes ]]
 }
 
+# ui_confirm_yes PROMPT — like ui_confirm but Enter means yes.
+ui_confirm_yes() {
+  local reply
+  read -rp "$1 [Y/n]: " reply || return 1
+  [[ -z $reply || ${reply,,} == y || ${reply,,} == yes ]]
+}
+
 ui_pause() {
   ((ST_OPT_BATCH)) && return 0
   [[ -t 0 ]] || return 0
@@ -357,6 +364,32 @@ net_default_gw() {
   has_cmd ip || return 0
   ip route show default 2>/dev/null |
     awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}'
+}
+
+# pkg_install PACKAGE — caller must already have the user's consent
+# (CLAUDE.md rule 1: nothing is installed silently). Output goes to the log.
+ST_PKG_INDEX_UPDATED=0
+
+pkg_install() {
+  local pkg="$1"
+  if has_cmd apt-get; then
+    export DEBIAN_FRONTEND=noninteractive
+    if ((ST_PKG_INDEX_UPDATED == 0)); then
+      apt-get update -qq >>"$ST_LOG_FILE" 2>&1 ||
+        log_warn "apt index update failed — trying the install anyway."
+      ST_PKG_INDEX_UPDATED=1
+    fi
+    apt-get install -y -qq "$pkg" >>"$ST_LOG_FILE" 2>&1
+  elif has_cmd dnf; then
+    dnf install -y "$pkg" >>"$ST_LOG_FILE" 2>&1
+  elif has_cmd yum; then
+    yum install -y "$pkg" >>"$ST_LOG_FILE" 2>&1
+  elif has_cmd pacman; then
+    pacman -Sy --noconfirm "$pkg" >>"$ST_LOG_FILE" 2>&1
+  else
+    log_error "No supported package manager found to install ${pkg}."
+    return 1
+  fi
 }
 
 # sysctl_get KEY — current value or "?" when unavailable.
@@ -521,24 +554,39 @@ rollback_latest() {
   fi
 
   local src="${ST_BACKUP_DIR}/runs/${run}"
-  local action target restored=0 removed=0 missing=0
+  local action target restored=0 removed=0 missing=0 sysctl_touched=0
   while IFS=$'\t' read -r action target; do
     case "$action" in
       modified)
         if [[ -e ${src}${target} || -L ${src}${target} ]]; then
           cp -a "${src}${target}" "$target"
           restored=$((restored + 1))
+          [[ $target == /etc/sysctl.d/* || $target == /etc/sysctl.conf ]] && sysctl_touched=1
         else
           log_warn "Backup missing for ${target} — skipped."
           missing=$((missing + 1))
         fi
         ;;
       created)
+        # Never delete an active swap file out from under the kernel.
+        if [[ -r /proc/swaps ]] && grep -q "^${target}[[:space:]]" /proc/swaps 2>/dev/null; then
+          if ! swapoff "$target" 2>>"$ST_LOG_FILE"; then
+            log_warn "Cannot swapoff ${target} — left in place."
+            missing=$((missing + 1))
+            continue
+          fi
+        fi
         rm -f "$target"
         removed=$((removed + 1))
+        [[ $target == /etc/sysctl.d/* ]] && sysctl_touched=1
         ;;
     esac
   done < <(awk -F'\t' -v run="$run" 'NR > 1 && $2 == run {print $3 "\t" $4}' "$ST_MANIFEST_FILE" | tac)
+
+  if ((sysctl_touched)) && has_cmd sysctl; then
+    sysctl --system >/dev/null 2>>"$ST_LOG_FILE" ||
+      log_warn "sysctl reload after rollback reported errors (see log)."
+  fi
 
   log_info "Rollback of run ${run}: ${restored} restored, ${removed} removed, ${missing} missing."
   printf '%sRollback of run %s:%s %d file(s) restored, %d removed' \
@@ -694,6 +742,1094 @@ show_status() {
   ui_pause
 }
 
+# ------------------------- src/modules/profile.sh -------------------------
+# ============================================================================
+# modules/profile.sh — layered profile resolution and capacity tiers.
+# Implements docs/PROFILES.md: the base layer ALWAYS covers the whole server;
+# the workload profile only decides the specialised extras on top.
+# ============================================================================
+
+ST_PROFILE='general'
+ST_PROFILE_SOURCE='default'
+
+ST_TIER=''
+ST_TIER_USERS=''
+ST_SOMAXCONN=0
+ST_NETDEV_BACKLOG=0
+ST_BUF_MB=0
+ST_CONNTRACK=0
+
+profile_resolve_auto() {
+  local detected=" ${ST_DETECTED[*]-} "
+  ST_PROFILE_SOURCE='auto-detected'
+  if [[ $detected == *'marzban-node'* || $detected == *'pg-node'* ||
+    $detected == *'xray'* || $detected == *'x-ui'* ]]; then
+    ST_PROFILE='vpn-node'
+  elif [[ $detected == *'wireguard'* || $detected == *'wg-dashboard'* ]]; then
+    ST_PROFILE='wireguard'
+  elif [[ $detected == *'marzban-panel'* ]]; then
+    ST_PROFILE='panel'
+  else
+    ST_PROFILE='general'
+    ST_PROFILE_SOURCE='nothing detected'
+  fi
+}
+
+# profile_wants_forwarding — vpn workloads route user traffic.
+profile_wants_forwarding() {
+  [[ $ST_PROFILE == vpn-node || $ST_PROFILE == wireguard || $ST_PROFILE == full ]]
+}
+
+tier_set() {
+  ST_TIER="$1"
+  case "$1" in
+    S) ST_TIER_USERS='~1k' ST_SOMAXCONN=8192 ST_NETDEV_BACKLOG=16384 ST_BUF_MB=8 ST_CONNTRACK=65536 ;;
+    M) ST_TIER_USERS='~10k' ST_SOMAXCONN=16384 ST_NETDEV_BACKLOG=32768 ST_BUF_MB=16 ST_CONNTRACK=262144 ;;
+    L) ST_TIER_USERS='~100k' ST_SOMAXCONN=32768 ST_NETDEV_BACKLOG=65536 ST_BUF_MB=32 ST_CONNTRACK=1048576 ;;
+    XL) ST_TIER_USERS='100k+' ST_SOMAXCONN=65535 ST_NETDEV_BACKLOG=65536 ST_BUF_MB=64 ST_CONNTRACK=2097152 ;;
+    *) tier_set S ;;
+  esac
+}
+
+# tier_compute — pick from RAM; the capacity_tier config key overrides.
+tier_compute() {
+  local override ram_mb
+  override="$(config_get capacity_tier auto)"
+  case "$override" in
+    S | M | L | XL)
+      tier_set "$override"
+      return 0
+      ;;
+  esac
+
+  ram_mb="$(mem_total_mb)"
+  if ((ram_mb <= 1536)); then
+    tier_set S
+  elif ((ram_mb <= 6144)); then
+    tier_set M
+  elif ((ram_mb <= 24576)); then
+    tier_set L
+  else
+    tier_set XL
+  fi
+
+  # A panel host never needs an L/XL conntrack table (docs/PROFILES.md) —
+  # its RAM is better left to the database.
+  if [[ $ST_PROFILE == panel && ($ST_TIER == L || $ST_TIER == XL) ]]; then
+    tier_set M
+  fi
+  return 0
+}
+
+tier_conntrack_ram_mb() {
+  # ~300 bytes per conntrack entry, worst case (table full).
+  printf '%d' $((ST_CONNTRACK * 300 / 1048576))
+}
+
+# ------------------------- src/modules/sysctl.sh -------------------------
+# ============================================================================
+# modules/sysctl.sh — kernel network tuning. Implements docs/SYSCTL.md
+# exactly: Layer 1 (base) always, Layer 2 forwarding keys for VPN profiles.
+# Every written file is tracked via st_track_file for rollback.
+# ============================================================================
+
+readonly ST_SYSCTL_FILE='/etc/sysctl.d/99-server-tools.conf'
+readonly ST_MODULES_FILE='/etc/modules-load.d/server-tools.conf'
+readonly ST_MODPROBE_FILE='/etc/modprobe.d/server-tools.conf'
+
+ST_CC='cubic'
+ST_QDISC='fq_codel'
+
+sysctl_detect_bbr() {
+  ST_CC='cubic'
+  ST_QDISC='fq_codel'
+  ver_ge "$(kernel_base)" "4.9" || return 0
+  # Kernels with built-in BBR have no module to load; availability is
+  # verified against the actual sysctl list right after.
+  modprobe tcp_bbr 2>/dev/null || true
+  if [[ " $(sysctl_get net.ipv4.tcp_available_congestion_control) " == *bbr* ]]; then
+    ST_CC='bbr'
+    ST_QDISC='fq'
+  fi
+  return 0
+}
+
+_sysctl_render() {
+  local buf_bytes=$((ST_BUF_MB * 1048576))
+  local ram_mb ram_pages
+  ram_mb="$(mem_total_mb)"
+  ram_pages=$((ram_mb * 256)) # 4 KiB pages
+
+  cat <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION} (profile=${ST_PROFILE}, tier=${ST_TIER})
+# The rationale for every key lives in docs/SYSCTL.md:
+# ${ST_REPO_URL}
+
+# --- Congestion control & queueing
+net.core.default_qdisc = ${ST_QDISC}
+net.ipv4.tcp_congestion_control = ${ST_CC}
+
+# --- Connection accept path (tier ${ST_TIER})
+net.core.somaxconn = ${ST_SOMAXCONN}
+net.ipv4.tcp_max_syn_backlog = ${ST_SOMAXCONN}
+net.core.netdev_max_backlog = ${ST_NETDEV_BACKLOG}
+net.ipv4.tcp_syncookies = 1
+
+# --- Ports, timers, keepalive
+net.ipv4.ip_local_port_range = 10240 65535
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 60
+net.ipv4.tcp_keepalive_probes = 5
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_notsent_lowat = 16384
+# Mode 1 probes only after a blackhole is detected (mode 2 is the harmful one).
+net.ipv4.tcp_mtu_probing = 1
+
+# --- Buffers (tier ${ST_TIER})
+net.core.rmem_max = ${buf_bytes}
+net.core.wmem_max = ${buf_bytes}
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.ipv4.tcp_rmem = 4096 87380 ${buf_bytes}
+net.ipv4.tcp_wmem = 4096 65536 ${buf_bytes}
+net.ipv4.udp_rmem_min = 16384
+net.ipv4.udp_wmem_min = 16384
+net.ipv4.udp_mem = $((ram_pages / 32)) $((ram_pages / 16)) $((ram_pages / 8))
+
+# --- System capacity
+fs.file-max = 2097152
+vm.swappiness = 10
+EOF
+
+  if profile_wants_forwarding; then
+    cat <<EOF
+
+# --- VPN workload (profile ${ST_PROFILE}): routing + conntrack + hardening
+net.ipv4.ip_forward = 1
+net.ipv6.conf.all.forwarding = 1
+net.netfilter.nf_conntrack_max = ${ST_CONNTRACK}
+# Kernel default is 5 DAYS — idle VPN flows would exhaust the table.
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.default.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+EOF
+  fi
+}
+
+sysctl_apply() {
+  if ! has_cmd sysctl; then
+    log_error "sysctl command not found — cannot tune the kernel."
+    return 1
+  fi
+
+  sysctl_detect_bbr
+
+  local modules=()
+  [[ $ST_CC == bbr ]] && modules+=(tcp_bbr)
+
+  if profile_wants_forwarding; then
+    # Without the module loaded, net.netfilter.* keys silently fail to apply.
+    modprobe nf_conntrack 2>/dev/null ||
+      log_warn "nf_conntrack module unavailable — conntrack keys may not apply."
+    modules+=(nf_conntrack)
+  fi
+
+  st_track_file "$ST_SYSCTL_FILE"
+  mkdir -p "$(dirname "$ST_SYSCTL_FILE")"
+  _sysctl_render >"$ST_SYSCTL_FILE"
+
+  if ((${#modules[@]} > 0)); then
+    st_track_file "$ST_MODULES_FILE"
+    mkdir -p "$(dirname "$ST_MODULES_FILE")"
+    {
+      printf '# Generated by %s v%s\n' "$ST_NAME" "$ST_VERSION"
+      printf '%s\n' "${modules[@]}"
+    } >"$ST_MODULES_FILE"
+  fi
+
+  if profile_wants_forwarding; then
+    # The conntrack hash table must scale with the table itself; the runtime
+    # knob is a module parameter, persisted for reboots via modprobe.d.
+    local hashsize=$((ST_CONNTRACK / 4))
+    st_track_file "$ST_MODPROBE_FILE"
+    mkdir -p "$(dirname "$ST_MODPROBE_FILE")"
+    printf '# Generated by %s v%s\noptions nf_conntrack hashsize=%s\n' \
+      "$ST_NAME" "$ST_VERSION" "$hashsize" >"$ST_MODPROBE_FILE"
+    if [[ -w /sys/module/nf_conntrack/parameters/hashsize ]]; then
+      printf '%s' "$hashsize" >/sys/module/nf_conntrack/parameters/hashsize 2>>"$ST_LOG_FILE" ||
+        log_warn "Could not resize the conntrack hash table live (persisted for next boot)."
+    fi
+  fi
+
+  # Apply; per-key errors land in the log instead of vanishing — the keys we
+  # care about are verified individually right after.
+  sysctl --system >/dev/null 2>>"$ST_LOG_FILE" || true
+
+  local cc_now qdisc_now rc=0
+  cc_now="$(sysctl_get net.ipv4.tcp_congestion_control)"
+  qdisc_now="$(sysctl_get net.core.default_qdisc)"
+  if [[ $cc_now != "$ST_CC" || $qdisc_now != "$ST_QDISC" ]]; then
+    log_warn "sysctl verify: cc=${cc_now}, qdisc=${qdisc_now} (expected ${ST_CC}/${ST_QDISC})"
+    rc=3
+  fi
+  if profile_wants_forwarding; then
+    local ct_now
+    ct_now="$(sysctl_get net.netfilter.nf_conntrack_max)"
+    if [[ $ct_now != "$ST_CONNTRACK" ]]; then
+      log_warn "sysctl verify: nf_conntrack_max=${ct_now} (expected ${ST_CONNTRACK})"
+      rc=3
+    fi
+  fi
+
+  log_info "sysctl applied: cc=${cc_now}, qdisc=${qdisc_now}, tier=${ST_TIER}, profile=${ST_PROFILE}"
+  return "$rc"
+}
+
+# ------------------------- src/modules/dns.sh -------------------------
+# ============================================================================
+# modules/dns.sh — DNS provider selection and safe application.
+#
+# Selection and application are deliberately decoupled: "Keep current DNS"
+# really keeps it (the legacy v1 bug silently applied the default provider).
+# No Domains=~. hijack; systemd-resolved gets a drop-in, plain systems get
+# a tracked /etc/resolv.conf rewrite.
+# ============================================================================
+
+ST_DNS1=''
+ST_DNS2=''
+
+# Format: name|primary|secondary
+readonly -a ST_DNS_PROVIDERS=(
+  'Cloudflare|1.1.1.1|1.0.0.1'
+  'Google|8.8.8.8|8.8.4.4'
+  'Quad9|9.9.9.9|149.112.112.112'
+  'OpenDNS|208.67.222.222|208.67.220.220'
+  'Shecan (for Iran-hosted servers)|178.22.122.100|185.51.200.2'
+)
+
+# is_valid_ip — IPv4 strictly, IPv6 loosely (contains a colon, no spaces).
+is_valid_ip() {
+  is_valid_ipv4 "$1" || [[ $1 == *:* && $1 != *' '* && -n $1 ]]
+}
+
+dns_latency_test() {
+  if ! has_cmd ping; then
+    printf 'ping is not available on this system.\n'
+    return 0
+  fi
+  local entry name ip1 ip2 ms
+  printf '%sLatency to each provider (1 probe, 1s timeout):%s\n' "$C_MUTED" "$C_RESET"
+  for entry in "${ST_DNS_PROVIDERS[@]}"; do
+    IFS='|' read -r name ip1 ip2 <<<"$entry"
+    ms="$(ping -c 1 -W 1 "$ip1" 2>/dev/null |
+      awk -F'time=' '/time=/ {split($2, a, " "); print a[1]; exit}')" || ms=''
+    if [[ -n $ms ]]; then
+      printf '  %-34s %s ms\n' "$name" "$ms"
+    else
+      printf '  %-34s timeout\n' "$name"
+    fi
+  done
+}
+
+# dns_select_menu — sets ST_DNS1/ST_DNS2 and returns 0 when the user picked
+# a provider to apply; returns 1 for "keep current" (caller MUST skip apply).
+dns_select_menu() {
+  local choice entry name ip1 ip2 i
+  while true; do
+    printf '\n%s[DNS provider]%s\n' "$C_TITLE" "$C_RESET"
+    i=1
+    for entry in "${ST_DNS_PROVIDERS[@]}"; do
+      IFS='|' read -r name ip1 ip2 <<<"$entry"
+      ui_menu_item "$i" "$name" "${ip1} / ${ip2}"
+      i=$((i + 1))
+    done
+    ui_menu_item 6 "Custom" "enter your own (IPv4 or IPv6)"
+    ui_menu_item t "Latency test" "ping every provider first"
+    ui_menu_item 0 "Keep current DNS" "no DNS change"
+    read -rp "Select [0]: " choice || return 1
+    case "${choice:-0}" in
+      [1-5])
+        IFS='|' read -r name ST_DNS1 ST_DNS2 <<<"${ST_DNS_PROVIDERS[$((choice - 1))]}"
+        return 0
+        ;;
+      6)
+        read -rp "Primary DNS: " ST_DNS1 || return 1
+        read -rp "Secondary DNS: " ST_DNS2 || return 1
+        if is_valid_ip "$ST_DNS1" && is_valid_ip "$ST_DNS2"; then
+          return 0
+        fi
+        printf '%sInvalid address — DNS left unchanged.%s\n' "$C_ERR" "$C_RESET"
+        return 1
+        ;;
+      t | T) dns_latency_test ;;
+      0) return 1 ;;
+      *) printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET" ;;
+    esac
+  done
+}
+
+dns_apply() {
+  [[ -n $ST_DNS1 && -n $ST_DNS2 ]] || return 2 # nothing selected — skip
+
+  if has_cmd systemctl && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    local dropin='/etc/systemd/resolved.conf.d/99-server-tools.conf'
+    st_track_file "$dropin"
+    mkdir -p "$(dirname "$dropin")"
+    cat >"$dropin" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[Resolve]
+DNS=${ST_DNS1} ${ST_DNS2}
+FallbackDNS=${ST_DNS2}
+EOF
+    if ! systemctl restart systemd-resolved 2>>"$ST_LOG_FILE"; then
+      log_warn "systemd-resolved restart failed — drop-in written but not active yet."
+      return 3
+    fi
+  else
+    st_track_file /etc/resolv.conf
+    if has_cmd chattr; then
+      # Some providers lock resolv.conf with +i; unlock before writing.
+      chattr -i /etc/resolv.conf 2>/dev/null || true
+    fi
+    rm -f /etc/resolv.conf
+    cat >/etc/resolv.conf <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+nameserver ${ST_DNS1}
+nameserver ${ST_DNS2}
+EOF
+    log_info "resolv.conf written directly (no systemd-resolved); note that a DHCP client may overwrite it."
+  fi
+
+  config_set dns_primary "$ST_DNS1"
+  config_set dns_secondary "$ST_DNS2"
+  log_info "DNS applied: ${ST_DNS1} / ${ST_DNS2}"
+  return 0
+}
+
+# ------------------------- src/modules/swap.sh -------------------------
+# ============================================================================
+# modules/swap.sh — create a swap file only when no swap exists at all.
+#
+# Fixes two legacy v1 flaws: the fstab entry is written only AFTER swapon
+# verifiably succeeds, and btrfs gets explicit CoW handling (fallocate'd
+# files are not usable as swap there).
+# ============================================================================
+
+swap_is_active() {
+  [[ -r /proc/swaps ]] && awk 'NR > 1 {found = 1} END {exit !found}' /proc/swaps
+}
+
+swap_apply() {
+  if swap_is_active; then
+    log_info "Swap already active — skipped."
+    return 2
+  fi
+
+  local swapfile='/swapfile'
+  local size_mb
+  size_mb="$(config_get swap_size_mb 2048)"
+  [[ $size_mb =~ ^[0-9]+$ ]] || size_mb=2048
+
+  # Refuse when disk headroom is too small (swap size + 1 GB safety margin).
+  local avail_mb
+  avail_mb="$(df -Pm / 2>/dev/null | awk 'NR == 2 {print $4}')" || avail_mb=0
+  [[ $avail_mb =~ ^[0-9]+$ ]] || avail_mb=0
+  if ((avail_mb < size_mb + 1024)); then
+    log_error "Not enough free disk for a ${size_mb} MB swap file (available: ${avail_mb} MB)."
+    return 1
+  fi
+
+  st_track_file /etc/fstab
+  st_track_file "$swapfile" # recorded as "created" so rollback removes it
+
+  local fstype
+  fstype="$(stat -f -c %T / 2>/dev/null)" || fstype=''
+  if [[ $fstype == btrfs ]]; then
+    # CoW must be disabled on the empty file before any data is written.
+    touch "$swapfile"
+    if has_cmd chattr; then
+      chattr +C "$swapfile" 2>/dev/null || true
+    fi
+    dd if=/dev/zero of="$swapfile" bs=1M count="$size_mb" status=none 2>>"$ST_LOG_FILE" || return 1
+  else
+    if ! fallocate -l "${size_mb}M" "$swapfile" 2>/dev/null; then
+      dd if=/dev/zero of="$swapfile" bs=1M count="$size_mb" status=none 2>>"$ST_LOG_FILE" || return 1
+    fi
+  fi
+
+  chmod 600 "$swapfile"
+  mkswap "$swapfile" >/dev/null 2>>"$ST_LOG_FILE" || return 1
+  if ! swapon "$swapfile" 2>>"$ST_LOG_FILE"; then
+    log_error "swapon failed (filesystem: ${fstype:-unknown}) — swap file removed, fstab untouched."
+    rm -f "$swapfile"
+    return 1
+  fi
+
+  if ! grep -qE '^[[:space:]]*/swapfile[[:space:]]' /etc/fstab 2>/dev/null; then
+    printf '/swapfile none swap sw 0 0\n' >>/etc/fstab
+  fi
+
+  log_info "Swap enabled: ${size_mb} MB at ${swapfile} (fs: ${fstype:-unknown})."
+  return 0
+}
+
+# ------------------------- src/modules/limits.sh -------------------------
+# ============================================================================
+# modules/limits.sh — file-descriptor limits for 100k+ concurrent sockets.
+# Uses a systemd drop-in instead of sed-editing system.conf, so rollback is
+# a clean file removal (legacy v1 mutated /etc/systemd/system.conf in place).
+# ============================================================================
+
+readonly ST_LIMITS_FILE='/etc/security/limits.d/99-server-tools.conf'
+readonly ST_SYSTEMD_DROPIN='/etc/systemd/system.conf.d/99-server-tools.conf'
+
+limits_apply() {
+  st_track_file "$ST_LIMITS_FILE"
+  mkdir -p "$(dirname "$ST_LIMITS_FILE")"
+  cat >"$ST_LIMITS_FILE" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+
+  if [[ -d /etc/systemd ]]; then
+    st_track_file "$ST_SYSTEMD_DROPIN"
+    mkdir -p "$(dirname "$ST_SYSTEMD_DROPIN")"
+    cat >"$ST_SYSTEMD_DROPIN" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[Manager]
+DefaultLimitNOFILE=1048576
+EOF
+    if has_cmd systemctl && ! systemctl daemon-reexec 2>>"$ST_LOG_FILE"; then
+      log_warn "systemd daemon-reexec failed — new limits take effect after reboot."
+      return 3
+    fi
+  fi
+
+  log_info "nofile limits set to 1048576 (PAM + systemd drop-in)."
+  return 0
+}
+
+# ------------------------- src/modules/extras.sh -------------------------
+# ============================================================================
+# modules/extras.sh — base-layer hygiene: journald disk cap and NTP sync.
+# Small-disk VPSes fill up with journal logs; Reality/TLS handshakes need
+# an accurate clock.
+# ============================================================================
+
+readonly ST_JOURNALD_DROPIN='/etc/systemd/journald.conf.d/99-server-tools.conf'
+
+extras_apply() {
+  local rc=0 did_anything=0
+
+  if [[ -d /etc/systemd ]]; then
+    st_track_file "$ST_JOURNALD_DROPIN"
+    mkdir -p "$(dirname "$ST_JOURNALD_DROPIN")"
+    cat >"$ST_JOURNALD_DROPIN" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[Journal]
+SystemMaxUse=100M
+RuntimeMaxUse=50M
+EOF
+    if has_cmd systemctl; then
+      systemctl restart systemd-journald 2>>"$ST_LOG_FILE" ||
+        log_warn "journald restart failed — the disk cap applies after next boot."
+    fi
+    did_anything=1
+  fi
+
+  if has_cmd timedatectl; then
+    if ! timedatectl set-ntp true 2>>"$ST_LOG_FILE"; then
+      log_warn "Could not enable NTP via timedatectl."
+      rc=3
+    fi
+    did_anything=1
+  fi
+
+  ((did_anything)) || return 2
+  return "$rc"
+}
+
+# ------------------------- src/modules/security.sh -------------------------
+# ============================================================================
+# modules/security.sh — Layer 3 optional hardening: UFW, fail2ban, SSH.
+#
+# Everything here is consent-based (CLAUDE.md rule 1). fail2ban is the only
+# resident service in the whole project and its cost is stated before the
+# user agrees. The SSH allow rule always lands before any deny rule, and the
+# sshd drop-in is validated with `sshd -t` before restart — no lockouts.
+# ============================================================================
+
+readonly ST_F2B_JAIL='/etc/fail2ban/jail.d/99-server-tools.local'
+readonly ST_SSHD_DROPIN='/etc/ssh/sshd_config.d/99-server-tools.conf'
+
+detect_ssh_port() {
+  local port=''
+  port="$(awk '/^[[:space:]]*[Pp]ort[[:space:]]/ {print $2; exit}' /etc/ssh/sshd_config 2>/dev/null)" || port=''
+  if [[ -z $port ]] && has_cmd ss; then
+    port="$(ss -tnlp 2>/dev/null | awk '/sshd/ {sub(/.*:/, "", $4); print $4; exit}')" || port=''
+  fi
+  [[ $port =~ ^[0-9]+$ ]] || port=22
+  printf '%s' "$port"
+}
+
+security_ufw() {
+  ui_section "UFW firewall"
+  if ! has_cmd ufw; then
+    ui_confirm "UFW is not installed. Install it now?" || return 0
+    if ! pkg_install ufw; then
+      log_error "UFW installation failed — see the log."
+      return 0
+    fi
+  fi
+
+  local ssh_port
+  ssh_port="$(detect_ssh_port)"
+  printf 'Detected SSH port: %s — it is allowed FIRST, so you cannot be locked out.\n' "$ssh_port"
+  if ! ufw allow "${ssh_port}/tcp" >/dev/null 2>>"$ST_LOG_FILE"; then
+    log_error "Could not add the SSH allow rule — aborting before any deny rule."
+    return 0
+  fi
+  ufw default deny incoming >/dev/null 2>>"$ST_LOG_FILE" || log_warn "Could not set default deny incoming."
+  ufw default allow outgoing >/dev/null 2>>"$ST_LOG_FILE" || log_warn "Could not set default allow outgoing."
+
+  local ports p
+  read -rp "Extra ports to allow (e.g. 443/tcp 80/tcp 51820/udp) [Enter=none]: " ports || ports=''
+  if [[ -n $ports ]]; then
+    local IFS=' ' # the global IFS has no space — restore word splitting here
+    for p in $ports; do
+      if [[ $p =~ ^[0-9]+(/(tcp|udp))?$ ]]; then
+        ufw allow "$p" >/dev/null 2>>"$ST_LOG_FILE" || log_warn "Rule failed: ${p}"
+      else
+        log_warn "Skipped invalid port spec: ${p}"
+      fi
+    done
+  fi
+
+  if has_cmd docker && docker ps -q 2>/dev/null | grep -q .; then
+    printf '%sWarning:%s Docker publishes container ports directly in iptables and\n' "$C_WARN" "$C_RESET"
+    printf 'BYPASSES UFW — published panel/node ports stay reachable regardless of\n'
+    printf 'these rules (see Network tools > Docker+UFW audit).\n'
+  fi
+
+  if ui_confirm "Enable UFW now?"; then
+    if ufw --force enable >/dev/null 2>>"$ST_LOG_FILE"; then
+      printf '%sUFW enabled.%s\n' "$C_OK" "$C_RESET"
+      ufw status verbose 2>/dev/null || log_warn "Could not print UFW status."
+    else
+      log_error "Enabling UFW failed — see the log."
+      return 0
+    fi
+  fi
+  printf '%sNote:%s firewall state is not covered by manifest rollback — revert with: ufw disable\n' \
+    "$C_MUTED" "$C_RESET"
+  log_info "UFW configured (SSH ${ssh_port}/tcp allowed)."
+}
+
+security_fail2ban() {
+  ui_section "fail2ban (SSH brute-force protection)"
+  printf 'fail2ban runs as a small resident service (~20 MB RAM) — the only\n'
+  printf 'exception to the zero-footprint rule, and only with your consent.\n'
+  ui_confirm "Install and enable fail2ban?" || return 0
+
+  if ! has_cmd fail2ban-server && ! pkg_install fail2ban; then
+    log_error "fail2ban installation failed — see the log."
+    return 0
+  fi
+
+  local ssh_port
+  ssh_port="$(detect_ssh_port)"
+  st_track_file "$ST_F2B_JAIL"
+  mkdir -p "$(dirname "$ST_F2B_JAIL")"
+  cat >"$ST_F2B_JAIL" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[sshd]
+enabled = true
+port = ${ssh_port}
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
+  if has_cmd systemctl &&
+    systemctl enable fail2ban >/dev/null 2>>"$ST_LOG_FILE" &&
+    systemctl restart fail2ban 2>>"$ST_LOG_FILE"; then
+    printf '%sfail2ban active%s (sshd jail on port %s, ban 1h after 5 tries).\n' \
+      "$C_OK" "$C_RESET" "$ssh_port"
+    log_info "fail2ban enabled (sshd jail, port ${ssh_port})."
+  else
+    log_error "fail2ban could not be enabled — see the log."
+  fi
+}
+
+security_ssh() {
+  ui_section "SSH hardening"
+  if [[ ! -d /etc/ssh/sshd_config.d ]]; then
+    log_warn "This system has no /etc/ssh/sshd_config.d — skipping (editing sshd_config in place is not safe enough)."
+    return 0
+  fi
+
+  local lines=('UseDNS no')
+  if [[ -s /root/.ssh/authorized_keys ]]; then
+    printf 'An SSH key for root exists.\n'
+    printf '%sVerify key login works in a second terminal BEFORE confirming.%s\n' "$C_WARN" "$C_RESET"
+    if ui_confirm "Disable password authentication?"; then
+      lines+=('PasswordAuthentication no')
+    fi
+  else
+    printf '%sNo /root/.ssh/authorized_keys found — password login stays enabled.%s\n' "$C_WARN" "$C_RESET"
+  fi
+
+  st_track_file "$ST_SSHD_DROPIN"
+  {
+    printf '# Generated by %s v%s\n' "$ST_NAME" "$ST_VERSION"
+    printf '%s\n' "${lines[@]}"
+  } >"$ST_SSHD_DROPIN"
+
+  if has_cmd sshd && ! sshd -t 2>>"$ST_LOG_FILE"; then
+    rm -f "$ST_SSHD_DROPIN"
+    log_error "sshd config validation failed — drop-in removed, nothing changed."
+    return 0
+  fi
+  if has_cmd systemctl; then
+    # Service name differs across distros (ssh on Debian/Ubuntu, sshd elsewhere).
+    systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>>"$ST_LOG_FILE" ||
+      log_warn "Could not restart sshd — settings apply on its next restart."
+  fi
+  printf '%sApplied:%s %s\n' "$C_OK" "$C_RESET" "${lines[*]}"
+  log_info "SSH hardening drop-in applied: ${lines[*]}"
+}
+
+security_menu() {
+  local choice
+  while true; do
+    ui_logo
+    ui_title "Security (Layer 3 — optional, consent-based)"
+    ui_menu_item 1 "UFW firewall" "SSH-safe setup, extra ports, Docker warning"
+    ui_menu_item 2 "fail2ban" "SSH brute-force bans (resident service ~20 MB)"
+    ui_menu_item 3 "SSH hardening" "UseDNS off, optional key-only login (validated)"
+    ui_menu_item 0 "Back"
+    ui_hr
+    read -rp "Select: " choice || return 0
+    case "${choice:-}" in
+      1)
+        security_ufw
+        ui_pause
+        ;;
+      2)
+        security_fail2ban
+        ui_pause
+        ;;
+      3)
+        security_ssh
+        ui_pause
+        ;;
+      0) return 0 ;;
+      *)
+        printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"
+        sleep 1
+        ;;
+    esac
+  done
+}
+
+# ------------------------- src/modules/vpn.sh -------------------------
+# ============================================================================
+# modules/vpn.sh — VPN-aware non-sysctl fixes.
+#
+# MSS clamping is the most common fix for "WireGuard connects but pages
+# don't load" behind NAT. Persistence uses a systemd ONESHOT unit: it runs
+# once at boot and exits — no resident process, zero-footprint compliant.
+# ============================================================================
+
+readonly ST_MSS_UNIT='/etc/systemd/system/server-tools-mss.service'
+readonly -a ST_MSS_RULE=(
+  FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+)
+
+vpn_mss_clamp() {
+  ui_section "MSS clamping (TCP over tunnels/NAT)"
+  printf 'Clamps TCP MSS to the path MTU on forwarded traffic. Fixes the classic\n'
+  printf '"VPN connects but sites do not load" symptom (WireGuard, tunnels, NAT).\n'
+  if ! has_cmd iptables; then
+    log_error "iptables not available — cannot apply MSS clamping."
+    return 0
+  fi
+  ui_confirm "Apply MSS clamping now?" || return 0
+
+  if ! iptables -t mangle -C "${ST_MSS_RULE[@]}" 2>/dev/null; then
+    if ! iptables -t mangle -A "${ST_MSS_RULE[@]}" 2>>"$ST_LOG_FILE"; then
+      log_error "Could not add the IPv4 MSS rule — see the log."
+      return 0
+    fi
+  fi
+  if has_cmd ip6tables && ! ip6tables -t mangle -C "${ST_MSS_RULE[@]}" 2>/dev/null; then
+    ip6tables -t mangle -A "${ST_MSS_RULE[@]}" 2>>"$ST_LOG_FILE" ||
+      log_warn "IPv6 MSS rule failed (IPv6 clamping skipped)."
+  fi
+
+  if [[ -d /etc/systemd/system ]] && has_cmd systemctl; then
+    local ipt ip6t
+    ipt="$(command -v iptables)"
+    ip6t="$(command -v ip6tables)" || ip6t=''
+    st_track_file "$ST_MSS_UNIT"
+    {
+      printf '# Generated by %s v%s\n' "$ST_NAME" "$ST_VERSION"
+      printf '[Unit]\nDescription=ServerTools MSS clamping (oneshot, exits after boot)\nAfter=network-pre.target\nWants=network-pre.target\n\n'
+      printf '[Service]\nType=oneshot\nRemainAfterExit=yes\n'
+      printf 'ExecStart=%s -t mangle -A %s\n' "$ipt" "${ST_MSS_RULE[*]}"
+      [[ -n $ip6t ]] && printf 'ExecStart=%s -t mangle -A %s\n' "$ip6t" "${ST_MSS_RULE[*]}"
+      printf '\n[Install]\nWantedBy=multi-user.target\n'
+    } >"$ST_MSS_UNIT"
+    systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
+    systemctl enable server-tools-mss.service >/dev/null 2>>"$ST_LOG_FILE" ||
+      log_warn "Could not enable boot persistence for the MSS rule."
+  else
+    log_warn "No systemd — the MSS rule is active now but will not survive a reboot."
+  fi
+
+  printf '%sMSS clamping active%s (persisted via oneshot unit — nothing stays running).\n' \
+    "$C_OK" "$C_RESET"
+  log_info "MSS clamping applied."
+}
+
+vpn_docker_ufw_audit() {
+  ui_section "Docker + UFW audit"
+  local docker_on=0 ufw_on=0
+  if has_cmd docker && docker ps -q 2>/dev/null | grep -q .; then
+    docker_on=1
+  fi
+  if has_cmd ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw_on=1
+  fi
+
+  if ((docker_on == 0)); then
+    printf 'No running Docker containers — no bypass risk.\n'
+    return 0
+  fi
+  if ((ufw_on == 0)); then
+    printf 'Docker is running but UFW is inactive — nothing to bypass (no firewall).\n'
+    return 0
+  fi
+
+  printf '%sBoth Docker and UFW are active.%s Docker inserts its own iptables rules,\n' "$C_WARN" "$C_RESET"
+  printf 'so ports published with -p/ports: are reachable EVEN IF UFW blocks them.\n'
+  printf '\n%sPublished ports right now:%s\n' "$C_KEY" "$C_RESET"
+  docker ps --format '  {{.Names}}: {{.Ports}}' 2>/dev/null ||
+    log_warn "Could not list container ports."
+  printf '\nMitigations: bind sensitive ports to 127.0.0.1 in compose, or use the\n'
+  printf 'ufw-docker approach (planned in ROADMAP.md backlog).\n'
+}
+
+# ------------------------- src/modules/tools.sh -------------------------
+# ============================================================================
+# modules/tools.sh — on-demand network diagnostics. Read-only except where
+# a tool explicitly says otherwise; nothing here runs in the background.
+# ============================================================================
+
+# Format: label|ip
+readonly -a ST_PING_TARGETS=(
+  'Iran - TCI (217.218.127.127)|217.218.127.127'
+  'Iran - Shecan (178.22.122.100)|178.22.122.100'
+  'Global - Cloudflare (1.1.1.1)|1.1.1.1'
+  'Global - Google (8.8.8.8)|8.8.8.8'
+)
+
+tools_ping_matrix() {
+  ui_section "Ping matrix (Iran + global, 3 probes each)"
+  if ! has_cmd ping; then
+    printf 'ping is not available on this system.\n'
+    return 0
+  fi
+  printf 'Useful for judging how well this location serves users in Iran.\n\n'
+  local entry label ip out loss avg
+  for entry in "${ST_PING_TARGETS[@]}"; do
+    IFS='|' read -r label ip <<<"$entry"
+    out="$(ping -c 3 -W 1 "$ip" 2>/dev/null)" || out=''
+    loss="$(grep -oE '[0-9]+(\.[0-9]+)?% packet loss' <<<"$out" | cut -d'%' -f1)" || loss=''
+    avg="$(awk -F'/' '/rtt|round-trip/ {print $5; exit}' <<<"$out")" || avg=''
+    if [[ -n $avg ]]; then
+      printf '  %-38s loss %3s%%   avg %s ms\n' "$label" "${loss:-?}" "$avg"
+    else
+      printf '  %-38s %sunreachable%s\n' "$label" "$C_ERR" "$C_RESET"
+    fi
+  done
+}
+
+tools_tcp_status() {
+  ui_section "TCP / conntrack live status"
+  ui_kv "Congestion" "$(sysctl_get net.ipv4.tcp_congestion_control)"
+  ui_kv "Qdisc" "$(sysctl_get net.core.default_qdisc)"
+  ui_kv "Available cc" "$(sysctl_get net.ipv4.tcp_available_congestion_control)"
+  ui_kv "IPv4 forward" "$(sysctl_get net.ipv4.ip_forward)"
+  ui_kv "IPv6 forward" "$(sysctl_get net.ipv6.conf.all.forwarding)"
+
+  local count max
+  count="$(sysctl_get net.netfilter.nf_conntrack_count)"
+  max="$(sysctl_get net.netfilter.nf_conntrack_max)"
+  if [[ $count =~ ^[0-9]+$ && $max =~ ^[0-9]+$ && $max -gt 0 ]]; then
+    ui_kv "Conntrack" "${count} / ${max} ($((count * 100 / max))% used)"
+  else
+    ui_kv "Conntrack" "module not loaded"
+  fi
+}
+
+tools_listening_ports() {
+  ui_section "Listening ports"
+  if ! has_cmd ss; then
+    printf 'ss (iproute2) is not available.\n'
+    return 0
+  fi
+  # Display-only snapshot; truncated to keep the screen readable.
+  ss -tulnp 2>/dev/null | head -30 || log_warn "Could not list sockets."
+}
+
+tools_menu() {
+  local choice
+  while true; do
+    ui_logo
+    ui_title "Network & VPN Tools"
+    ui_menu_item 1 "Ping matrix" "latency/loss to Iran + global targets"
+    ui_menu_item 2 "DNS latency test" "ping every DNS provider"
+    ui_menu_item 3 "TCP/conntrack status" "BBR, forwarding, table usage"
+    ui_menu_item 4 "Listening ports" "ss -tulnp snapshot"
+    ui_menu_item 5 "MSS clamping" "fix 'VPN connects but no sites' (WireGuard/NAT)"
+    ui_menu_item 6 "Docker+UFW audit" "check the firewall bypass"
+    ui_menu_item 0 "Back"
+    ui_hr
+    read -rp "Select: " choice || return 0
+    case "${choice:-}" in
+      1)
+        tools_ping_matrix
+        ui_pause
+        ;;
+      2)
+        dns_latency_test
+        ui_pause
+        ;;
+      3)
+        tools_tcp_status
+        ui_pause
+        ;;
+      4)
+        tools_listening_ports
+        ui_pause
+        ;;
+      5)
+        vpn_mss_clamp
+        ui_pause
+        ;;
+      6)
+        vpn_docker_ufw_audit
+        ui_pause
+        ;;
+      0) return 0 ;;
+      *)
+        printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"
+        sleep 1
+        ;;
+    esac
+  done
+}
+
+# ------------------------- src/modules/optimize.sh -------------------------
+# ============================================================================
+# modules/optimize.sh — Quick/Custom Optimize flows:
+# plan → confirm → apply steps with honest per-step outcomes → summary.
+#
+# NOTE: step functions run via `"$fn" || rc=$?`, which suppresses errexit for
+# their whole body (bash semantics). Steps therefore signal outcomes with
+# explicit return codes: 0=ok, 1=failed, 2=skipped, 3=applied with warnings.
+# ============================================================================
+
+ST_STEP_RESULTS=()
+ST_STEP_IDX=0
+ST_STEP_TOTAL=0
+
+st_run_step() { # st_run_step TITLE FN
+  local title="$1" fn="$2" rc=0
+  ST_STEP_IDX=$((ST_STEP_IDX + 1))
+  printf '%s[%d/%d]%s %s ... ' "$C_KEY" "$ST_STEP_IDX" "$ST_STEP_TOTAL" "$C_RESET" "$title"
+  "$fn" || rc=$?
+  case "$rc" in
+    0)
+      printf '%sOK%s\n' "$C_OK" "$C_RESET"
+      ST_STEP_RESULTS+=("ok|${title}")
+      ;;
+    2)
+      printf '%sSKIPPED%s\n' "$C_MUTED" "$C_RESET"
+      ST_STEP_RESULTS+=("skip|${title}")
+      ;;
+    3)
+      printf '%sWARN%s\n' "$C_WARN" "$C_RESET"
+      ST_STEP_RESULTS+=("warn|${title}")
+      ;;
+    *)
+      printf '%sFAILED%s\n' "$C_ERR" "$C_RESET"
+      ST_STEP_RESULTS+=("fail|${title}")
+      ;;
+  esac
+  return 0
+}
+
+st_report_summary() {
+  local entry status _title ok=0 warn=0 fail=0 skip=0
+  for entry in "${ST_STEP_RESULTS[@]-}"; do
+    IFS='|' read -r status _title <<<"$entry"
+    case "$status" in
+      ok) ok=$((ok + 1)) ;;
+      warn) warn=$((warn + 1)) ;;
+      skip) skip=$((skip + 1)) ;;
+      fail) fail=$((fail + 1)) ;;
+    esac
+  done
+
+  ui_hr
+  if ((fail > 0)); then
+    printf '%sCompleted with failures:%s %d ok, %d warned, %d skipped, %d failed — see the log.\n' \
+      "$C_ERR" "$C_RESET" "$ok" "$warn" "$skip" "$fail"
+  elif ((warn > 0)); then
+    printf '%sCompleted with warnings:%s %d ok, %d warned, %d skipped — details in the log.\n' \
+      "$C_WARN" "$C_RESET" "$ok" "$warn" "$skip"
+  else
+    printf '%sAll steps completed:%s %d applied, %d skipped.\n' "$C_OK" "$C_RESET" "$ok" "$skip"
+  fi
+  ui_kv "Backups" "$ST_RUN_BACKUP_DIR"
+  ui_kv "Log" "$ST_LOG_FILE"
+  ui_kv "Rollback" "menu option [4], or: --rollback"
+  printf '%sNo daemons or cron jobs were installed — nothing stays running.%s\n' "$C_MUTED" "$C_RESET"
+}
+
+_optimize_show_plan() {
+  ui_kv "Profile" "${ST_PROFILE} (${ST_PROFILE_SOURCE})"
+  ui_kv "Capacity tier" "${ST_TIER} — up to ${ST_TIER_USERS} concurrent users"
+  if profile_wants_forwarding; then
+    ui_kv "Conntrack" "${ST_CONNTRACK} entries (~$(tier_conntrack_ram_mb) MB kernel RAM worst case)"
+  fi
+  ui_kv "Socket buffers" "up to ${ST_BUF_MB} MB per socket"
+  ui_kv "Congestion" "BBR when the kernel supports it, else cubic"
+}
+
+# _optimize_run WITH_DNS WITH_SWAP WITH_LIMITS WITH_EXTRAS  (each 0/1)
+_optimize_run() {
+  local with_dns="$1" with_swap="$2" with_limits="$3" with_extras="$4"
+  ST_STEP_RESULTS=()
+  ST_STEP_IDX=0
+  ST_STEP_TOTAL=$((1 + with_dns + with_swap + with_limits + with_extras))
+  ui_hr
+  st_run_step "Kernel network tuning (sysctl, tier ${ST_TIER})" sysctl_apply
+  ((with_limits)) && st_run_step "File-descriptor limits (nofile)" limits_apply
+  ((with_extras)) && st_run_step "Journald cap & NTP" extras_apply
+  ((with_swap)) && st_run_step "Swap file" swap_apply
+  ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
+  st_report_summary
+  config_set last_profile "$ST_PROFILE"
+  config_set last_tier "$ST_TIER"
+  return 0
+}
+
+quick_optimize() {
+  ui_logo
+  ui_title "Quick Optimize"
+  detect_stack
+  profile_resolve_auto
+  tier_compute
+
+  printf 'The base layer always optimizes the whole server; the detected profile\n'
+  printf 'only adds specialised tuning on top of it.\n'
+  ui_hr
+  _optimize_show_plan
+  ui_hr
+
+  local with_dns=0
+  if dns_select_menu; then
+    with_dns=1
+  fi
+
+  printf '\n'
+  if ! ui_confirm "Apply the plan above?"; then
+    ui_pause
+    return 0
+  fi
+  _optimize_run "$with_dns" 1 1 1
+  ui_pause
+}
+
+custom_optimize() {
+  ui_logo
+  ui_title "Custom Optimize"
+  detect_stack
+  profile_resolve_auto
+  local suggested="$ST_PROFILE"
+
+  printf '%s[Workload profile]%s suggested: %s (%s)\n' \
+    "$C_TITLE" "$C_RESET" "$suggested" "$ST_PROFILE_SOURCE"
+  ui_menu_item 1 "general" "complete general-purpose tuning"
+  ui_menu_item 2 "vpn-node" "Xray node (marzban-node / pg-node / x-ui)"
+  ui_menu_item 3 "wireguard" "WireGuard host"
+  ui_menu_item 4 "panel" "Marzban/Pasarguard panel host"
+  ui_menu_item 5 "full" "everything with best-practice defaults"
+  local choice
+  read -rp "Select [Enter=suggested]: " choice || return 0
+  case "${choice:-}" in
+    1) ST_PROFILE='general' ;;
+    2) ST_PROFILE='vpn-node' ;;
+    3) ST_PROFILE='wireguard' ;;
+    4) ST_PROFILE='panel' ;;
+    5) ST_PROFILE='full' ;;
+    *) ST_PROFILE="$suggested" ;;
+  esac
+  ST_PROFILE_SOURCE='manual'
+
+  tier_compute
+  local tier_choice
+  read -rp "Capacity tier — auto picked ${ST_TIER} (up to ${ST_TIER_USERS} users). Override [S/M/L/XL, Enter=keep]: " tier_choice || tier_choice=''
+  case "${tier_choice^^}" in
+    S | M | L | XL)
+      tier_set "${tier_choice^^}"
+      config_set capacity_tier "${tier_choice^^}"
+      ;;
+  esac
+
+  ui_hr
+  _optimize_show_plan
+  ui_hr
+
+  if ! ui_confirm_yes "Apply sysctl kernel tuning? (the core step)"; then
+    printf 'Nothing to do without the sysctl step.\n'
+    ui_pause
+    return 0
+  fi
+  local with_swap=0 with_limits=0 with_extras=0 with_dns=0
+  ui_confirm_yes "Raise file-descriptor limits?" && with_limits=1
+  ui_confirm_yes "Cap journald disk usage and enable NTP?" && with_extras=1
+  ui_confirm_yes "Create a swap file if none exists?" && with_swap=1
+  if dns_select_menu; then
+    with_dns=1
+  fi
+
+  printf '\n'
+  if ! ui_confirm "Apply now?"; then
+    ui_pause
+    return 0
+  fi
+  _optimize_run "$with_dns" "$with_swap" "$with_limits" "$with_extras"
+  ui_pause
+}
+
 # ------------------------- src/menu.sh -------------------------
 # ============================================================================
 # menu.sh — interactive main menu and sub-screens.
@@ -755,7 +1891,9 @@ main_menu() {
     ui_menu_item 2 "Custom Optimize" "pick profile and modules manually"
     ui_menu_item 3 "System Status" "full report"
     ui_menu_item 4 "Rollback" "undo the latest recorded run"
-    ui_menu_item 5 "Settings" "paths, config, manifest"
+    ui_menu_item 5 "Security" "UFW / fail2ban / SSH hardening (optional)"
+    ui_menu_item 6 "Network & VPN tools" "ping matrix, MSS clamp, audits"
+    ui_menu_item 7 "Settings" "paths, config, manifest"
     ui_menu_item 0 "Exit"
     ui_hr
     # EOF (e.g. closed stdin) simply exits the menu.
@@ -764,11 +1902,13 @@ main_menu() {
       return 0
     }
     case "${choice:-}" in
-      1) ui_todo "Quick Optimize" ;;
-      2) ui_todo "Custom Optimize" ;;
+      1) quick_optimize ;;
+      2) custom_optimize ;;
       3) show_status ;;
       4) menu_rollback ;;
-      5) menu_settings ;;
+      5) security_menu ;;
+      6) tools_menu ;;
+      7) menu_settings ;;
       0) return 0 ;;
       *)
         printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"

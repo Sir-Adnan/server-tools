@@ -59,7 +59,9 @@ main_menu() {
     ui_menu_item 2 "Custom Optimize" "pick profile and modules manually"
     ui_menu_item 3 "System Status" "full report"
     ui_menu_item 4 "Rollback" "undo the latest recorded run"
-    ui_menu_item 5 "Settings" "paths, config, manifest"
+    ui_menu_item 5 "Security" "UFW / fail2ban / SSH hardening (optional)"
+    ui_menu_item 6 "Network & VPN tools" "ping matrix, MSS clamp, audits"
+    ui_menu_item 7 "Settings" "paths, config, manifest"
     ui_menu_item 0 "Exit"
     ui_hr
     # EOF (e.g. closed stdin) simply exits the menu.
@@ -68,11 +70,13 @@ main_menu() {
       return 0
     }
     case "${choice:-}" in
-      1) ui_todo "Quick Optimize" ;;
-      2) ui_todo "Custom Optimize" ;;
+      1) quick_optimize ;;
+      2) custom_optimize ;;
       3) show_status ;;
       4) menu_rollback ;;
-      5) menu_settings ;;
+      5) security_menu ;;
+      6) tools_menu ;;
+      7) menu_settings ;;
       0) return 0 ;;
       *)
         printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"

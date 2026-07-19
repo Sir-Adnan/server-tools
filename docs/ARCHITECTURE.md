@@ -28,7 +28,7 @@ src/ (modular, ShellCheck-directive headers)
 ## Source map
 
 | Path | Responsibility |
-|---|---|
+| --- | --- |
 | `src/00-header.sh` | strict mode, constants (`ST_*`), ERR trap |
 | `src/core/colors.sh` | terminal capability detection, palette (`C_*`) |
 | `src/core/log.sh` | leveled logging, rotation, `die` |
@@ -38,16 +38,26 @@ src/ (modular, ShellCheck-directive headers)
 | `src/core/backup.sh` | `st_track_file`, manifest-driven rollback |
 | `src/modules/detect.sh` | workload detection (panel/node/wireguard/…) |
 | `src/modules/sysinfo.sh` | System Status report |
+| `src/modules/profile.sh` | layered profiles + capacity tiers (docs/PROFILES.md) |
+| `src/modules/sysctl.sh` | kernel tuning (docs/SYSCTL.md) |
+| `src/modules/dns.sh` | DNS providers, latency test, resolved/resolv.conf |
+| `src/modules/swap.sh` | swap file with btrfs handling + verified swapon |
+| `src/modules/limits.sh` | nofile via PAM + systemd drop-in |
+| `src/modules/extras.sh` | journald cap, NTP |
+| `src/modules/security.sh` | UFW, fail2ban, SSH hardening (consent-based) |
+| `src/modules/vpn.sh` | MSS clamping (oneshot persistence), Docker+UFW audit |
+| `src/modules/tools.sh` | ping matrix, TCP/conntrack status, port snapshot |
+| `src/modules/optimize.sh` | Quick/Custom flows, step runner, summary |
 | `src/menu.sh` | interactive menu |
 | `src/99-main.sh` | CLI parsing, entrypoint |
 
-Phase 2 adds `src/modules/{sysctl,dns,swap,limits}.sh` plus
-`src/profiles.sh` implementing `docs/PROFILES.md` and `docs/SYSCTL.md`.
+Phase 4 (see `ROADMAP.md`) adds `--auto` non-interactive mode, the `st`
+installer command, and self-update.
 
 ## Runtime filesystem layout (FHS)
 
 | Path | Purpose |
-|---|---|
+| --- | --- |
 | `/etc/server-tools/config` | user preferences (key=value) |
 | `/var/lib/server-tools/manifest.tsv` | change manifest (rollback source of truth) |
 | `/var/lib/server-tools/backups/original/<abs-path>` | pristine first-touch copies, never overwritten |

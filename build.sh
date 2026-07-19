@@ -22,6 +22,16 @@ SOURCES=(
   core/backup.sh
   modules/detect.sh
   modules/sysinfo.sh
+  modules/profile.sh
+  modules/sysctl.sh
+  modules/dns.sh
+  modules/swap.sh
+  modules/limits.sh
+  modules/extras.sh
+  modules/security.sh
+  modules/vpn.sh
+  modules/tools.sh
+  modules/optimize.sh
   menu.sh
   99-main.sh
 )

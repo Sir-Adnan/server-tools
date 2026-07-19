@@ -32,6 +32,19 @@ tool itself must add **zero** runtime load.
    Edit `src/` and run `./build.sh`. Build order lives in the `SOURCES` array
    in `build.sh` — new src files must be added there.
 7. **`legacy/` is frozen.** Never modify the legacy scripts.
+8. **Never `git commit` or `git push`.** The user commits manually in
+   VS Code. Prepare the working tree only (edit, build, test); at most,
+   suggest a commit message in the summary.
+
+## Working efficiently (token budget)
+
+- This file is the only doc loaded every session — keep it lean. Details
+  live elsewhere and are read on demand only: `ROADMAP.md` (phases, backlog,
+  release criteria), `docs/*` (specs), `CHANGELOG.md`.
+- Never read `dist/server-tools.sh` (generated, ~1600 lines) or anything in
+  `legacy/` — work from `src/` files, which are small and single-purpose.
+- Prefer a targeted Read/Grep of one `src/` file over re-scanning the tree;
+  the Source map in `docs/ARCHITECTURE.md` says which file owns what.
 
 ## Commands
 
@@ -71,11 +84,7 @@ root inside Ubuntu 20.04/22.04/24.04 and Debian 11/12 containers. Keep it green.
 - Rollback/manifest design and guarantees: `docs/ROLLBACK.md`.
 - Repo layout and build pipeline: `docs/ARCHITECTURE.md`.
 
-## Roadmap context
+## Roadmap
 
-- Phase 1 (done): skeleton, core runtime, state/backup, detect, status, CI.
-- Phase 2: sysctl/DNS/swap/limits modules + profiles + capacity tiers.
-- Phase 3: security (UFW/fail2ban/SSH), VPN-aware tuning (IPv6 forwarding,
-  MSS clamping, Docker+UFW interaction), network test tools.
-- Phase 4: `--auto` non-interactive mode, `st` installer, self-update,
-  first stable release.
+Phases, current status, backlog ideas, and release criteria: `ROADMAP.md`
+(read it only when planning what to build next).

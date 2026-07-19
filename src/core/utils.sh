@@ -94,6 +94,32 @@ net_default_gw() {
     awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}'
 }
 
+# pkg_install PACKAGE — caller must already have the user's consent
+# (CLAUDE.md rule 1: nothing is installed silently). Output goes to the log.
+ST_PKG_INDEX_UPDATED=0
+
+pkg_install() {
+  local pkg="$1"
+  if has_cmd apt-get; then
+    export DEBIAN_FRONTEND=noninteractive
+    if ((ST_PKG_INDEX_UPDATED == 0)); then
+      apt-get update -qq >>"$ST_LOG_FILE" 2>&1 ||
+        log_warn "apt index update failed — trying the install anyway."
+      ST_PKG_INDEX_UPDATED=1
+    fi
+    apt-get install -y -qq "$pkg" >>"$ST_LOG_FILE" 2>&1
+  elif has_cmd dnf; then
+    dnf install -y "$pkg" >>"$ST_LOG_FILE" 2>&1
+  elif has_cmd yum; then
+    yum install -y "$pkg" >>"$ST_LOG_FILE" 2>&1
+  elif has_cmd pacman; then
+    pacman -Sy --noconfirm "$pkg" >>"$ST_LOG_FILE" 2>&1
+  else
+    log_error "No supported package manager found to install ${pkg}."
+    return 1
+  fi
+}
+
 # sysctl_get KEY — current value or "?" when unavailable.
 sysctl_get() {
   local value

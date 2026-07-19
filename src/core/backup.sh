@@ -40,24 +40,39 @@ rollback_latest() {
   fi
 
   local src="${ST_BACKUP_DIR}/runs/${run}"
-  local action target restored=0 removed=0 missing=0
+  local action target restored=0 removed=0 missing=0 sysctl_touched=0
   while IFS=$'\t' read -r action target; do
     case "$action" in
       modified)
         if [[ -e ${src}${target} || -L ${src}${target} ]]; then
           cp -a "${src}${target}" "$target"
           restored=$((restored + 1))
+          [[ $target == /etc/sysctl.d/* || $target == /etc/sysctl.conf ]] && sysctl_touched=1
         else
           log_warn "Backup missing for ${target} — skipped."
           missing=$((missing + 1))
         fi
         ;;
       created)
+        # Never delete an active swap file out from under the kernel.
+        if [[ -r /proc/swaps ]] && grep -q "^${target}[[:space:]]" /proc/swaps 2>/dev/null; then
+          if ! swapoff "$target" 2>>"$ST_LOG_FILE"; then
+            log_warn "Cannot swapoff ${target} — left in place."
+            missing=$((missing + 1))
+            continue
+          fi
+        fi
         rm -f "$target"
         removed=$((removed + 1))
+        [[ $target == /etc/sysctl.d/* ]] && sysctl_touched=1
         ;;
     esac
   done < <(awk -F'\t' -v run="$run" 'NR > 1 && $2 == run {print $3 "\t" $4}' "$ST_MANIFEST_FILE" | tac)
+
+  if ((sysctl_touched)) && has_cmd sysctl; then
+    sysctl --system >/dev/null 2>>"$ST_LOG_FILE" ||
+      log_warn "sysctl reload after rollback reported errors (see log)."
+  fi
 
   log_info "Rollback of run ${run}: ${restored} restored, ${removed} removed, ${missing} missing."
   printf '%sRollback of run %s:%s %d file(s) restored, %d removed' \

@@ -1,0 +1,184 @@
+# shellcheck shell=bash
+# ============================================================================
+# modules/optimize.sh — Quick/Custom Optimize flows:
+# plan → confirm → apply steps with honest per-step outcomes → summary.
+#
+# NOTE: step functions run via `"$fn" || rc=$?`, which suppresses errexit for
+# their whole body (bash semantics). Steps therefore signal outcomes with
+# explicit return codes: 0=ok, 1=failed, 2=skipped, 3=applied with warnings.
+# ============================================================================
+
+ST_STEP_RESULTS=()
+ST_STEP_IDX=0
+ST_STEP_TOTAL=0
+
+st_run_step() { # st_run_step TITLE FN
+  local title="$1" fn="$2" rc=0
+  ST_STEP_IDX=$((ST_STEP_IDX + 1))
+  printf '%s[%d/%d]%s %s ... ' "$C_KEY" "$ST_STEP_IDX" "$ST_STEP_TOTAL" "$C_RESET" "$title"
+  "$fn" || rc=$?
+  case "$rc" in
+    0)
+      printf '%sOK%s\n' "$C_OK" "$C_RESET"
+      ST_STEP_RESULTS+=("ok|${title}")
+      ;;
+    2)
+      printf '%sSKIPPED%s\n' "$C_MUTED" "$C_RESET"
+      ST_STEP_RESULTS+=("skip|${title}")
+      ;;
+    3)
+      printf '%sWARN%s\n' "$C_WARN" "$C_RESET"
+      ST_STEP_RESULTS+=("warn|${title}")
+      ;;
+    *)
+      printf '%sFAILED%s\n' "$C_ERR" "$C_RESET"
+      ST_STEP_RESULTS+=("fail|${title}")
+      ;;
+  esac
+  return 0
+}
+
+st_report_summary() {
+  local entry status _title ok=0 warn=0 fail=0 skip=0
+  for entry in "${ST_STEP_RESULTS[@]-}"; do
+    IFS='|' read -r status _title <<<"$entry"
+    case "$status" in
+      ok) ok=$((ok + 1)) ;;
+      warn) warn=$((warn + 1)) ;;
+      skip) skip=$((skip + 1)) ;;
+      fail) fail=$((fail + 1)) ;;
+    esac
+  done
+
+  ui_hr
+  if ((fail > 0)); then
+    printf '%sCompleted with failures:%s %d ok, %d warned, %d skipped, %d failed — see the log.\n' \
+      "$C_ERR" "$C_RESET" "$ok" "$warn" "$skip" "$fail"
+  elif ((warn > 0)); then
+    printf '%sCompleted with warnings:%s %d ok, %d warned, %d skipped — details in the log.\n' \
+      "$C_WARN" "$C_RESET" "$ok" "$warn" "$skip"
+  else
+    printf '%sAll steps completed:%s %d applied, %d skipped.\n' "$C_OK" "$C_RESET" "$ok" "$skip"
+  fi
+  ui_kv "Backups" "$ST_RUN_BACKUP_DIR"
+  ui_kv "Log" "$ST_LOG_FILE"
+  ui_kv "Rollback" "menu option [4], or: --rollback"
+  printf '%sNo daemons or cron jobs were installed — nothing stays running.%s\n' "$C_MUTED" "$C_RESET"
+}
+
+_optimize_show_plan() {
+  ui_kv "Profile" "${ST_PROFILE} (${ST_PROFILE_SOURCE})"
+  ui_kv "Capacity tier" "${ST_TIER} — up to ${ST_TIER_USERS} concurrent users"
+  if profile_wants_forwarding; then
+    ui_kv "Conntrack" "${ST_CONNTRACK} entries (~$(tier_conntrack_ram_mb) MB kernel RAM worst case)"
+  fi
+  ui_kv "Socket buffers" "up to ${ST_BUF_MB} MB per socket"
+  ui_kv "Congestion" "BBR when the kernel supports it, else cubic"
+}
+
+# _optimize_run WITH_DNS WITH_SWAP WITH_LIMITS WITH_EXTRAS  (each 0/1)
+_optimize_run() {
+  local with_dns="$1" with_swap="$2" with_limits="$3" with_extras="$4"
+  ST_STEP_RESULTS=()
+  ST_STEP_IDX=0
+  ST_STEP_TOTAL=$((1 + with_dns + with_swap + with_limits + with_extras))
+  ui_hr
+  st_run_step "Kernel network tuning (sysctl, tier ${ST_TIER})" sysctl_apply
+  ((with_limits)) && st_run_step "File-descriptor limits (nofile)" limits_apply
+  ((with_extras)) && st_run_step "Journald cap & NTP" extras_apply
+  ((with_swap)) && st_run_step "Swap file" swap_apply
+  ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
+  st_report_summary
+  config_set last_profile "$ST_PROFILE"
+  config_set last_tier "$ST_TIER"
+  return 0
+}
+
+quick_optimize() {
+  ui_logo
+  ui_title "Quick Optimize"
+  detect_stack
+  profile_resolve_auto
+  tier_compute
+
+  printf 'The base layer always optimizes the whole server; the detected profile\n'
+  printf 'only adds specialised tuning on top of it.\n'
+  ui_hr
+  _optimize_show_plan
+  ui_hr
+
+  local with_dns=0
+  if dns_select_menu; then
+    with_dns=1
+  fi
+
+  printf '\n'
+  if ! ui_confirm "Apply the plan above?"; then
+    ui_pause
+    return 0
+  fi
+  _optimize_run "$with_dns" 1 1 1
+  ui_pause
+}
+
+custom_optimize() {
+  ui_logo
+  ui_title "Custom Optimize"
+  detect_stack
+  profile_resolve_auto
+  local suggested="$ST_PROFILE"
+
+  printf '%s[Workload profile]%s suggested: %s (%s)\n' \
+    "$C_TITLE" "$C_RESET" "$suggested" "$ST_PROFILE_SOURCE"
+  ui_menu_item 1 "general" "complete general-purpose tuning"
+  ui_menu_item 2 "vpn-node" "Xray node (marzban-node / pg-node / x-ui)"
+  ui_menu_item 3 "wireguard" "WireGuard host"
+  ui_menu_item 4 "panel" "Marzban/Pasarguard panel host"
+  ui_menu_item 5 "full" "everything with best-practice defaults"
+  local choice
+  read -rp "Select [Enter=suggested]: " choice || return 0
+  case "${choice:-}" in
+    1) ST_PROFILE='general' ;;
+    2) ST_PROFILE='vpn-node' ;;
+    3) ST_PROFILE='wireguard' ;;
+    4) ST_PROFILE='panel' ;;
+    5) ST_PROFILE='full' ;;
+    *) ST_PROFILE="$suggested" ;;
+  esac
+  ST_PROFILE_SOURCE='manual'
+
+  tier_compute
+  local tier_choice
+  read -rp "Capacity tier — auto picked ${ST_TIER} (up to ${ST_TIER_USERS} users). Override [S/M/L/XL, Enter=keep]: " tier_choice || tier_choice=''
+  case "${tier_choice^^}" in
+    S | M | L | XL)
+      tier_set "${tier_choice^^}"
+      config_set capacity_tier "${tier_choice^^}"
+      ;;
+  esac
+
+  ui_hr
+  _optimize_show_plan
+  ui_hr
+
+  if ! ui_confirm_yes "Apply sysctl kernel tuning? (the core step)"; then
+    printf 'Nothing to do without the sysctl step.\n'
+    ui_pause
+    return 0
+  fi
+  local with_swap=0 with_limits=0 with_extras=0 with_dns=0
+  ui_confirm_yes "Raise file-descriptor limits?" && with_limits=1
+  ui_confirm_yes "Cap journald disk usage and enable NTP?" && with_extras=1
+  ui_confirm_yes "Create a swap file if none exists?" && with_swap=1
+  if dns_select_menu; then
+    with_dns=1
+  fi
+
+  printf '\n'
+  if ! ui_confirm "Apply now?"; then
+    ui_pause
+    return 0
+  fi
+  _optimize_run "$with_dns" "$with_swap" "$with_limits" "$with_extras"
+  ui_pause
+}
