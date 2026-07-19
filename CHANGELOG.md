@@ -8,6 +8,20 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 Full rewrite ("ServerTools v2").
 
+### Added — Phase 4 (automation & distribution)
+
+- `--auto` non-interactive mode for fleet provisioning: applies the base
+  layer plus the detected (or `--profile`-forced) workload profile without
+  any prompt. Companions: `--tier S|M|L|XL`, `--dns <provider|ip1,ip2>`
+  (DNS untouched when omitted), `--no-swap`, `--no-limits`, `--no-extras`.
+  Example: `st --auto --profile vpn-node --tier L --dns cloudflare`.
+- `--install`: installs the running script as `/usr/local/bin/st` (tracked
+  in the manifest); works from a file or from a `bash <(curl ...)` pipe.
+- `--update`: self-update preferring the latest GitHub Release with SHA-256
+  verification, falling back to the raw main build until the first release
+  exists; every download must pass `bash -n` and a fingerprint check before
+  anything is replaced. Both also available in the Settings menu.
+
 ### Added — Phase 3 (security, VPN-aware tuning, network tools)
 
 - `security` module (all consent-based): UFW setup with SSH-port auto-detect

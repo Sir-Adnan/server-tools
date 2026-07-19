@@ -41,14 +41,31 @@ bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main
 
 > ⚠️ مسیر قبلی `main/opt.sh` به `main/legacy/opt.sh` منتقل شده است.
 
+### نصب به‌عنوان دستور `st` (پیشنهادی)
+
+```bash
+bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/dist/server-tools.sh) --install
+```
+
+از این به بعد کافیست `st` را اجرا کنید؛ آپدیت هم با `st --update`.
+
 ### گزینه‌های CLI (نسخه ۲)
 
 ```text
 --status      نمایش گزارش کامل وضعیت سیستم و خروج
+--auto        بهینه‌سازی غیرتعاملی (لایه پایه + پروفایل تشخیص‌داده‌شده)
+                --profile NAME  --tier S|M|L|XL  --dns cloudflare|ip1,ip2
+                --no-swap  --no-limits  --no-extras
 --rollback    بازگردانی آخرین اجرای ثبت‌شده و خروج
---no-color    خروجی بدون رنگ
---debug       لاگ کامل
--v, --version | -h, --help
+--install     نصب به‌عنوان دستور st
+--update      آپدیت خودکار از آخرین Release (با تأیید SHA-256)
+--no-color    خروجی بدون رنگ · --debug لاگ کامل · -v نسخه · -h راهنما
+```
+
+نمونه برای مدیریت چند نود (Ansible/اسکریپت):
+
+```bash
+st --auto --profile vpn-node --tier L --dns cloudflare
 ```
 
 ## 🗺️ نقشه راه
@@ -56,7 +73,8 @@ bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main
 - [x] **فاز ۱** — اسکلت پروژه، هسته (UI/لاگ/State/Backup/Detect)، سیستم Build، CI
 - [x] **فاز ۲** — ماژول‌های بهینه‌سازی (sysctl / DNS / Swap / Limits) + پروفایل‌ها + Capacity Tier
 - [x] **فاز ۳** — امنیت (UFW / fail2ban / SSH)، تنظیمات VPN-aware (MSS clamp، Docker+UFW)، ابزارهای تست شبکه
-- [ ] **فاز ۴** — حالت `--auto` غیرتعاملی، دستور `st`، self-update، اولین انتشار پایدار
+- [x] **فاز ۴** — حالت `--auto` غیرتعاملی، دستور `st`، self-update
+- [ ] **انتشار v2.0.0** — پس از تست روی سرور واقعی (معیارها در ROADMAP)
 
 جزئیات کامل فازها، ایده‌های آینده و معیارهای انتشار: [ROADMAP.md](ROADMAP.md)
 

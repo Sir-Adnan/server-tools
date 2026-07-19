@@ -47,12 +47,10 @@ src/ (modular, ShellCheck-directive headers)
 | `src/modules/security.sh` | UFW, fail2ban, SSH hardening (consent-based) |
 | `src/modules/vpn.sh` | MSS clamping (oneshot persistence), Docker+UFW audit |
 | `src/modules/tools.sh` | ping matrix, TCP/conntrack status, port snapshot |
-| `src/modules/optimize.sh` | Quick/Custom flows, step runner, summary |
+| `src/modules/selfupdate.sh` | `st` installer, verified self-update |
+| `src/modules/optimize.sh` | Quick/Custom/Auto flows, step runner, summary |
 | `src/menu.sh` | interactive menu |
 | `src/99-main.sh` | CLI parsing, entrypoint |
-
-Phase 4 (see `ROADMAP.md`) adds `--auto` non-interactive mode, the `st`
-installer command, and self-update.
 
 ## Runtime filesystem layout (FHS)
 

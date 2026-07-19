@@ -31,4 +31,10 @@ if bash "$DIST" --definitely-not-an-option >/dev/null 2>&1; then
   fail "unknown option should exit non-zero"
 fi
 
+if bash "$DIST" --auto --profile >/dev/null 2>&1; then
+  fail "--profile without a value should exit non-zero"
+fi
+
+bash "$DIST" --help | grep -q -- '--auto' || fail "--help should document --auto"
+
 printf 'smoke: OK (v%s)\n' "$VERSION"

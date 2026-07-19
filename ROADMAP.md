@@ -31,14 +31,15 @@ Quick/Custom Optimize flows with honest per-step outcomes.
 - `tools` module: ping matrix (Iran + global targets), DNS latency,
   conntrack/BBR live status, listening-ports overview.
 
-### Phase 4 — automation & first stable release ⬜
+### Phase 4 — automation & distribution ✅ (code) / release ⬜
 
-- `--auto` non-interactive mode (`--profile`, `--tier`, `--dns`, `--yes`)
-  for fleet provisioning via Ansible/SSH loops.
-- `st` command installer (`/usr/local/bin/st`) + `st update` self-update
-  from GitHub Releases with SHA-256 verification.
-- Tag `v2.0.0`: release workflow publishes the built file + checksums;
-  README install links switch from `main` to `releases/latest`.
+- Done: `--auto` non-interactive mode (`--profile`, `--tier`, `--dns`,
+  `--no-swap/--no-limits/--no-extras`); `--install` to
+  `/usr/local/bin/st`; `--update` self-update (release-first with SHA-256
+  verification, raw-main fallback, `bash -n` + fingerprint gate).
+- Remaining: tag `v2.0.0` after the release criteria below pass on a real
+  server; then switch README install links from `main` to
+  `releases/latest`.
 
 ## Backlog (unscheduled ideas)
 

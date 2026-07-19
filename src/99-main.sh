@@ -9,18 +9,40 @@ usage() {
 ${ST_NAME} v${ST_VERSION} — Linux server optimization toolkit
 ${ST_REPO_URL}
 
-Usage: server-tools.sh [OPTIONS]
+Usage: server-tools.sh [OPTIONS]   (installed: st [OPTIONS])
 
 Actions (no action starts the interactive menu):
-  --status        Print the full system status report and exit
-  --rollback      Revert the latest recorded run and exit
+  --status              Print the full system status report and exit
+  --auto                Non-interactive optimize: base layer + detected profile
+  --rollback            Revert the latest recorded run and exit
+  --install             Install as the 'st' command (/usr/local/bin/st)
+  --update              Self-update from the latest GitHub release
 
-Options:
-  --no-color      Disable colored output (NO_COLOR env is also honoured)
-  --debug         Verbose logging to console and log file
-  -v, --version   Print version and exit
-  -h, --help      Show this help
+Options for --auto:
+  --profile NAME        general | vpn-node | wireguard | panel | full
+  --tier T              Capacity tier: S | M | L | XL (default: by RAM)
+  --dns VALUE           Provider (cloudflare|google|quad9|opendns|shecan)
+                        or custom "primary,secondary" (skipped when omitted)
+  --no-swap             Skip the swap step
+  --no-limits           Skip the nofile limits step
+  --no-extras           Skip the journald/NTP step
+
+General options:
+  --no-color            Disable colored output (NO_COLOR env also honoured)
+  --debug               Verbose logging to console and log file
+  -v, --version         Print version and exit
+  -h, --help            Show this help
+
+Example (fleet provisioning):
+  st --auto --profile vpn-node --tier L --dns cloudflare
 EOF
+}
+
+_need_value() { # _need_value OPTION VALUE
+  if [[ -z ${2:-} ]]; then
+    printf 'Missing value for %s\n' "$1" >&2
+    exit 2
+  fi
 }
 
 main() {
@@ -37,6 +59,27 @@ main() {
         ;;
       --status) action="status" ;;
       --rollback) action="rollback" ;;
+      --auto) action="auto" ;;
+      --install) action="install" ;;
+      --update) action="update" ;;
+      --profile)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_PROFILE="$1"
+        ;;
+      --tier)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_TIER="${1^^}"
+        ;;
+      --dns)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_DNS="$1"
+        ;;
+      --no-swap) ST_AUTO_SWAP=0 ;;
+      --no-limits) ST_AUTO_LIMITS=0 ;;
+      --no-extras) ST_AUTO_EXTRAS=0 ;;
       --no-color) ST_OPT_NO_COLOR=1 ;;
       --debug) ST_OPT_DEBUG=1 ;;
       *)
@@ -64,6 +107,18 @@ main() {
     rollback)
       ST_OPT_BATCH=1
       rollback_latest
+      ;;
+    auto)
+      ST_OPT_BATCH=1
+      auto_optimize
+      ;;
+    install)
+      ST_OPT_BATCH=1
+      st_self_install
+      ;;
+    update)
+      ST_OPT_BATCH=1
+      st_self_update
       ;;
     menu)
       main_menu

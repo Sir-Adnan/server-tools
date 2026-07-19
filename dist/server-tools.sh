@@ -1078,6 +1078,40 @@ dns_select_menu() {
   done
 }
 
+# dns_resolve_cli VALUE — non-interactive parsing for --dns: a provider name
+# (cloudflare|google|quad9|opendns|shecan) or "primary,secondary" addresses.
+dns_resolve_cli() {
+  local value="$1"
+  case "${value,,}" in
+    cloudflare)
+      ST_DNS1='1.1.1.1'
+      ST_DNS2='1.0.0.1'
+      ;;
+    google)
+      ST_DNS1='8.8.8.8'
+      ST_DNS2='8.8.4.4'
+      ;;
+    quad9)
+      ST_DNS1='9.9.9.9'
+      ST_DNS2='149.112.112.112'
+      ;;
+    opendns)
+      ST_DNS1='208.67.222.222'
+      ST_DNS2='208.67.220.220'
+      ;;
+    shecan)
+      ST_DNS1='178.22.122.100'
+      ST_DNS2='185.51.200.2'
+      ;;
+    *,*)
+      ST_DNS1="${value%%,*}"
+      ST_DNS2="${value#*,}"
+      is_valid_ip "$ST_DNS1" && is_valid_ip "$ST_DNS2"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 dns_apply() {
   [[ -n $ST_DNS1 && -n $ST_DNS2 ]] || return 2 # nothing selected — skip
 
@@ -1645,6 +1679,126 @@ tools_menu() {
   done
 }
 
+# ------------------------- src/modules/selfupdate.sh -------------------------
+# ============================================================================
+# modules/selfupdate.sh — install as the `st` command and self-update.
+#
+# Downloads prefer the latest GitHub Release (with SHA-256 verification when
+# sha256sum is available) and fall back to the raw main build only while no
+# release exists yet. Every downloaded file must pass `bash -n` and a
+# fingerprint check before it replaces anything.
+# ============================================================================
+
+readonly ST_INSTALL_PATH='/usr/local/bin/st'
+readonly ST_URL_RELEASE='https://github.com/Sir-Adnan/server-tools/releases/latest/download/server-tools.sh'
+readonly ST_URL_RELEASE_SUMS='https://github.com/Sir-Adnan/server-tools/releases/latest/download/SHA256SUMS'
+readonly ST_URL_RAW='https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/dist/server-tools.sh'
+
+# _self_source_path — path of the running script, empty when running from a
+# pipe/process substitution (`bash <(curl ...)` yields a non-reusable /dev/fd).
+_self_source_path() {
+  local src="${BASH_SOURCE[0]:-}"
+  if [[ -f $src && -r $src ]]; then
+    printf '%s' "$src"
+    return 0
+  fi
+  return 1
+}
+
+# _self_download DEST — fetch, verify (checksum + parse + fingerprint), move.
+_self_download() {
+  local dest="$1" tmp="${ST_LIB_DIR}/download.$$" from_release=0
+  if ! has_cmd curl; then
+    log_error "curl is required to download ServerTools."
+    return 1
+  fi
+
+  if curl -fsSL --max-time 60 "$ST_URL_RELEASE" -o "$tmp" 2>>"$ST_LOG_FILE"; then
+    from_release=1
+  elif ! curl -fsSL --max-time 60 "$ST_URL_RAW" -o "$tmp" 2>>"$ST_LOG_FILE"; then
+    rm -f "$tmp"
+    log_error "Download failed (release and raw fallback) — see the log."
+    return 1
+  fi
+
+  if ((from_release)) && has_cmd sha256sum; then
+    local sums expected actual
+    sums="$(curl -fsSL --max-time 30 "$ST_URL_RELEASE_SUMS" 2>>"$ST_LOG_FILE")" || sums=''
+    if [[ -n $sums ]]; then
+      expected="$(awk '/server-tools\.sh/ {print $1; exit}' <<<"$sums")"
+      actual="$(sha256sum "$tmp" | awk '{print $1}')"
+      if [[ -n $expected && $expected != "$actual" ]]; then
+        rm -f "$tmp"
+        log_error "SHA-256 mismatch on the downloaded release — aborting."
+        return 1
+      fi
+    fi
+  fi
+
+  if ! bash -n "$tmp" 2>>"$ST_LOG_FILE" || ! grep -q 'ST_NAME="ServerTools"' "$tmp"; then
+    rm -f "$tmp"
+    log_error "Downloaded file failed sanity checks — nothing was replaced."
+    return 1
+  fi
+  mv -f "$tmp" "$dest"
+}
+
+st_self_install() {
+  local src
+  mkdir -p "$(dirname "$ST_INSTALL_PATH")"
+  st_track_file "$ST_INSTALL_PATH"
+  if src="$(_self_source_path)"; then
+    cp -f "$src" "$ST_INSTALL_PATH"
+  else
+    printf 'Running from a pipe — downloading the current build instead.\n'
+    _self_download "$ST_INSTALL_PATH" || return 1
+  fi
+  chmod 755 "$ST_INSTALL_PATH"
+  printf '%sInstalled.%s Run %sst%s from now on; update anytime with: st --update\n' \
+    "$C_OK" "$C_RESET" "$C_KEY" "$C_RESET"
+  log_info "Installed to ${ST_INSTALL_PATH} (v${ST_VERSION})."
+}
+
+st_self_update() {
+  local target new_ver tmp="${ST_LIB_DIR}/update.$$"
+  if [[ -f $ST_INSTALL_PATH ]]; then
+    target="$ST_INSTALL_PATH"
+  elif ! target="$(_self_source_path)"; then
+    log_error "Not installed and not running from a file — use --install first."
+    return 1
+  fi
+
+  if ! has_cmd curl; then
+    log_error "curl is required for self-update."
+    return 1
+  fi
+  if curl -fsSL --max-time 60 "$ST_URL_RELEASE" -o "$tmp" 2>>"$ST_LOG_FILE" ||
+    curl -fsSL --max-time 60 "$ST_URL_RAW" -o "$tmp" 2>>"$ST_LOG_FILE"; then
+    new_ver="$(grep -oE 'ST_VERSION="[^"]+"' "$tmp" | head -n1 | cut -d'"' -f2)" || new_ver=''
+    if [[ -z $new_ver ]]; then
+      rm -f "$tmp"
+      log_error "Could not read the downloaded version — aborting."
+      return 1
+    fi
+    if [[ $new_ver == "$ST_VERSION" ]]; then
+      printf 'Already up to date (v%s).\n' "$ST_VERSION"
+      rm -f "$tmp"
+      return 0
+    fi
+    rm -f "$tmp" # re-download through the verifying path below
+  else
+    rm -f "$tmp"
+    log_error "Update check failed — see the log."
+    return 1
+  fi
+
+  st_track_file "$target"
+  _self_download "$target" || return 1
+  chmod 755 "$target"
+  printf '%sUpdated:%s v%s -> v%s (%s)\n' "$C_OK" "$C_RESET" "$ST_VERSION" "$new_ver" "$target"
+  log_info "Self-updated: v${ST_VERSION} -> v${new_ver}."
+}
+
 # ------------------------- src/modules/optimize.sh -------------------------
 # ============================================================================
 # modules/optimize.sh — Quick/Custom Optimize flows:
@@ -1658,6 +1812,14 @@ tools_menu() {
 ST_STEP_RESULTS=()
 ST_STEP_IDX=0
 ST_STEP_TOTAL=0
+
+# --auto flags, filled by the CLI parser in 99-main.sh.
+ST_AUTO_PROFILE=''
+ST_AUTO_TIER=''
+ST_AUTO_DNS=''
+ST_AUTO_SWAP=1
+ST_AUTO_LIMITS=1
+ST_AUTO_EXTRAS=1
 
 st_run_step() { # st_run_step TITLE FN
   local title="$1" fn="$2" rc=0
@@ -1768,6 +1930,42 @@ quick_optimize() {
   ui_pause
 }
 
+# auto_optimize — the non-interactive flow behind --auto. No prompts: DNS is
+# only touched when --dns was given; invalid values die with a clear message.
+auto_optimize() {
+  detect_stack
+  if [[ -n $ST_AUTO_PROFILE ]]; then
+    case "$ST_AUTO_PROFILE" in
+      general | vpn-node | wireguard | panel | full)
+        ST_PROFILE="$ST_AUTO_PROFILE"
+        ST_PROFILE_SOURCE='cli'
+        ;;
+      *) die "Invalid --profile '${ST_AUTO_PROFILE}' (general|vpn-node|wireguard|panel|full)." ;;
+    esac
+  else
+    profile_resolve_auto
+  fi
+
+  tier_compute
+  if [[ -n $ST_AUTO_TIER ]]; then
+    case "$ST_AUTO_TIER" in
+      S | M | L | XL) tier_set "$ST_AUTO_TIER" ;;
+      *) die "Invalid --tier '${ST_AUTO_TIER}' (S|M|L|XL)." ;;
+    esac
+  fi
+
+  local with_dns=0
+  if [[ -n $ST_AUTO_DNS ]]; then
+    dns_resolve_cli "$ST_AUTO_DNS" ||
+      die "Invalid --dns '${ST_AUTO_DNS}' (provider name or ip1,ip2)."
+    with_dns=1
+  fi
+
+  ui_title "Auto Optimize (non-interactive)"
+  _optimize_show_plan
+  _optimize_run "$with_dns" "$ST_AUTO_SWAP" "$ST_AUTO_LIMITS" "$ST_AUTO_EXTRAS"
+}
+
 custom_optimize() {
   ui_logo
   ui_title "Custom Optimize"
@@ -1868,18 +2066,38 @@ menu_rollback() {
 }
 
 menu_settings() {
-  ui_logo
-  ui_title "Settings & Paths"
-  ui_kv "Version" "$ST_VERSION"
-  ui_kv "Config file" "$ST_CONFIG_FILE"
-  ui_kv "Log file" "$ST_LOG_FILE"
-  ui_kv "Backups" "$ST_BACKUP_DIR"
-  ui_kv "Manifest" "$ST_MANIFEST_FILE"
-  ui_kv "Recorded changes" "$(manifest_entry_count)"
-  ui_hr
-  printf 'Preference options (DNS provider, capacity tier, profile) arrive together\n'
-  printf 'with the optimization modules in the next milestone.\n'
-  ui_pause
+  local choice
+  while true; do
+    ui_logo
+    ui_title "Settings & Maintenance"
+    ui_kv "Version" "$ST_VERSION"
+    ui_kv "Config file" "$ST_CONFIG_FILE"
+    ui_kv "Log file" "$ST_LOG_FILE"
+    ui_kv "Backups" "$ST_BACKUP_DIR"
+    ui_kv "Recorded changes" "$(manifest_entry_count)"
+    ui_kv "Saved profile" "$(config_get last_profile 'none yet') / tier $(config_get last_tier '-')"
+    ui_hr
+    ui_menu_item 1 "Install 'st' command" "run 'st' instead of the long one-liner"
+    ui_menu_item 2 "Check for updates" "self-update from the latest release"
+    ui_menu_item 0 "Back"
+    ui_hr
+    read -rp "Select: " choice || return 0
+    case "${choice:-}" in
+      1)
+        st_self_install || log_warn "Install did not complete."
+        ui_pause
+        ;;
+      2)
+        st_self_update || log_warn "Update did not complete."
+        ui_pause
+        ;;
+      0) return 0 ;;
+      *)
+        printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"
+        sleep 1
+        ;;
+    esac
+  done
 }
 
 main_menu() {
@@ -1929,18 +2147,40 @@ usage() {
 ${ST_NAME} v${ST_VERSION} — Linux server optimization toolkit
 ${ST_REPO_URL}
 
-Usage: server-tools.sh [OPTIONS]
+Usage: server-tools.sh [OPTIONS]   (installed: st [OPTIONS])
 
 Actions (no action starts the interactive menu):
-  --status        Print the full system status report and exit
-  --rollback      Revert the latest recorded run and exit
+  --status              Print the full system status report and exit
+  --auto                Non-interactive optimize: base layer + detected profile
+  --rollback            Revert the latest recorded run and exit
+  --install             Install as the 'st' command (/usr/local/bin/st)
+  --update              Self-update from the latest GitHub release
 
-Options:
-  --no-color      Disable colored output (NO_COLOR env is also honoured)
-  --debug         Verbose logging to console and log file
-  -v, --version   Print version and exit
-  -h, --help      Show this help
+Options for --auto:
+  --profile NAME        general | vpn-node | wireguard | panel | full
+  --tier T              Capacity tier: S | M | L | XL (default: by RAM)
+  --dns VALUE           Provider (cloudflare|google|quad9|opendns|shecan)
+                        or custom "primary,secondary" (skipped when omitted)
+  --no-swap             Skip the swap step
+  --no-limits           Skip the nofile limits step
+  --no-extras           Skip the journald/NTP step
+
+General options:
+  --no-color            Disable colored output (NO_COLOR env also honoured)
+  --debug               Verbose logging to console and log file
+  -v, --version         Print version and exit
+  -h, --help            Show this help
+
+Example (fleet provisioning):
+  st --auto --profile vpn-node --tier L --dns cloudflare
 EOF
+}
+
+_need_value() { # _need_value OPTION VALUE
+  if [[ -z ${2:-} ]]; then
+    printf 'Missing value for %s\n' "$1" >&2
+    exit 2
+  fi
 }
 
 main() {
@@ -1957,6 +2197,27 @@ main() {
         ;;
       --status) action="status" ;;
       --rollback) action="rollback" ;;
+      --auto) action="auto" ;;
+      --install) action="install" ;;
+      --update) action="update" ;;
+      --profile)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_PROFILE="$1"
+        ;;
+      --tier)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_TIER="${1^^}"
+        ;;
+      --dns)
+        _need_value "$1" "${2:-}"
+        shift
+        ST_AUTO_DNS="$1"
+        ;;
+      --no-swap) ST_AUTO_SWAP=0 ;;
+      --no-limits) ST_AUTO_LIMITS=0 ;;
+      --no-extras) ST_AUTO_EXTRAS=0 ;;
       --no-color) ST_OPT_NO_COLOR=1 ;;
       --debug) ST_OPT_DEBUG=1 ;;
       *)
@@ -1984,6 +2245,18 @@ main() {
     rollback)
       ST_OPT_BATCH=1
       rollback_latest
+      ;;
+    auto)
+      ST_OPT_BATCH=1
+      auto_optimize
+      ;;
+    install)
+      ST_OPT_BATCH=1
+      st_self_install
+      ;;
+    update)
+      ST_OPT_BATCH=1
+      st_self_update
       ;;
     menu)
       main_menu

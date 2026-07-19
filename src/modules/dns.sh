@@ -81,6 +81,40 @@ dns_select_menu() {
   done
 }
 
+# dns_resolve_cli VALUE — non-interactive parsing for --dns: a provider name
+# (cloudflare|google|quad9|opendns|shecan) or "primary,secondary" addresses.
+dns_resolve_cli() {
+  local value="$1"
+  case "${value,,}" in
+    cloudflare)
+      ST_DNS1='1.1.1.1'
+      ST_DNS2='1.0.0.1'
+      ;;
+    google)
+      ST_DNS1='8.8.8.8'
+      ST_DNS2='8.8.4.4'
+      ;;
+    quad9)
+      ST_DNS1='9.9.9.9'
+      ST_DNS2='149.112.112.112'
+      ;;
+    opendns)
+      ST_DNS1='208.67.222.222'
+      ST_DNS2='208.67.220.220'
+      ;;
+    shecan)
+      ST_DNS1='178.22.122.100'
+      ST_DNS2='185.51.200.2'
+      ;;
+    *,*)
+      ST_DNS1="${value%%,*}"
+      ST_DNS2="${value#*,}"
+      is_valid_ip "$ST_DNS1" && is_valid_ip "$ST_DNS2"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 dns_apply() {
   [[ -n $ST_DNS1 && -n $ST_DNS2 ]] || return 2 # nothing selected — skip
 

@@ -36,18 +36,38 @@ menu_rollback() {
 }
 
 menu_settings() {
-  ui_logo
-  ui_title "Settings & Paths"
-  ui_kv "Version" "$ST_VERSION"
-  ui_kv "Config file" "$ST_CONFIG_FILE"
-  ui_kv "Log file" "$ST_LOG_FILE"
-  ui_kv "Backups" "$ST_BACKUP_DIR"
-  ui_kv "Manifest" "$ST_MANIFEST_FILE"
-  ui_kv "Recorded changes" "$(manifest_entry_count)"
-  ui_hr
-  printf 'Preference options (DNS provider, capacity tier, profile) arrive together\n'
-  printf 'with the optimization modules in the next milestone.\n'
-  ui_pause
+  local choice
+  while true; do
+    ui_logo
+    ui_title "Settings & Maintenance"
+    ui_kv "Version" "$ST_VERSION"
+    ui_kv "Config file" "$ST_CONFIG_FILE"
+    ui_kv "Log file" "$ST_LOG_FILE"
+    ui_kv "Backups" "$ST_BACKUP_DIR"
+    ui_kv "Recorded changes" "$(manifest_entry_count)"
+    ui_kv "Saved profile" "$(config_get last_profile 'none yet') / tier $(config_get last_tier '-')"
+    ui_hr
+    ui_menu_item 1 "Install 'st' command" "run 'st' instead of the long one-liner"
+    ui_menu_item 2 "Check for updates" "self-update from the latest release"
+    ui_menu_item 0 "Back"
+    ui_hr
+    read -rp "Select: " choice || return 0
+    case "${choice:-}" in
+      1)
+        st_self_install || log_warn "Install did not complete."
+        ui_pause
+        ;;
+      2)
+        st_self_update || log_warn "Update did not complete."
+        ui_pause
+        ;;
+      0) return 0 ;;
+      *)
+        printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"
+        sleep 1
+        ;;
+    esac
+  done
 }
 
 main_menu() {

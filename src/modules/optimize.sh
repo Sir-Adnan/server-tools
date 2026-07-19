@@ -12,6 +12,14 @@ ST_STEP_RESULTS=()
 ST_STEP_IDX=0
 ST_STEP_TOTAL=0
 
+# --auto flags, filled by the CLI parser in 99-main.sh.
+ST_AUTO_PROFILE=''
+ST_AUTO_TIER=''
+ST_AUTO_DNS=''
+ST_AUTO_SWAP=1
+ST_AUTO_LIMITS=1
+ST_AUTO_EXTRAS=1
+
 st_run_step() { # st_run_step TITLE FN
   local title="$1" fn="$2" rc=0
   ST_STEP_IDX=$((ST_STEP_IDX + 1))
@@ -119,6 +127,42 @@ quick_optimize() {
   fi
   _optimize_run "$with_dns" 1 1 1
   ui_pause
+}
+
+# auto_optimize — the non-interactive flow behind --auto. No prompts: DNS is
+# only touched when --dns was given; invalid values die with a clear message.
+auto_optimize() {
+  detect_stack
+  if [[ -n $ST_AUTO_PROFILE ]]; then
+    case "$ST_AUTO_PROFILE" in
+      general | vpn-node | wireguard | panel | full)
+        ST_PROFILE="$ST_AUTO_PROFILE"
+        ST_PROFILE_SOURCE='cli'
+        ;;
+      *) die "Invalid --profile '${ST_AUTO_PROFILE}' (general|vpn-node|wireguard|panel|full)." ;;
+    esac
+  else
+    profile_resolve_auto
+  fi
+
+  tier_compute
+  if [[ -n $ST_AUTO_TIER ]]; then
+    case "$ST_AUTO_TIER" in
+      S | M | L | XL) tier_set "$ST_AUTO_TIER" ;;
+      *) die "Invalid --tier '${ST_AUTO_TIER}' (S|M|L|XL)." ;;
+    esac
+  fi
+
+  local with_dns=0
+  if [[ -n $ST_AUTO_DNS ]]; then
+    dns_resolve_cli "$ST_AUTO_DNS" ||
+      die "Invalid --dns '${ST_AUTO_DNS}' (provider name or ip1,ip2)."
+    with_dns=1
+  fi
+
+  ui_title "Auto Optimize (non-interactive)"
+  _optimize_show_plan
+  _optimize_run "$with_dns" "$ST_AUTO_SWAP" "$ST_AUTO_LIMITS" "$ST_AUTO_EXTRAS"
 }
 
 custom_optimize() {

@@ -31,6 +31,7 @@ SOURCES=(
   modules/security.sh
   modules/vpn.sh
   modules/tools.sh
+  modules/selfupdate.sh
   modules/optimize.sh
   menu.sh
   99-main.sh
