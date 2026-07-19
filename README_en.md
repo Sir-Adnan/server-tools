@@ -1,121 +1,55 @@
-# 🚀 VPN Server Optimizer (V4 Production - Gold Edition)
+# 🧰 ServerTools
 
-![Bash](https://img.shields.io/badge/Language-Bash-4EAA25?style=for-the-badge&logo=gnu-bash)
-![System](https://img.shields.io/badge/System-Linux-FCC624?style=for-the-badge&logo=linux)
-![Network](https://img.shields.io/badge/Network-BBR%20%2B%20FQ-007EC6?style=for-the-badge&logo=cisco)
-![License](https://img.shields.io/badge/License-MIT-blue?style=for-the-badge)
-![Telegram](https://img.shields.io/badge/Support-Telegram-blue?style=for-the-badge&logo=telegram&link=https://t.me/UnknownZero)
+Linux server optimization toolkit — built for VPN infrastructure servers
+(Xray/Reality nodes such as `marzban-node` and `pg-node`, Marzban/Pasarguard
+panels, WireGuard, x-ui) as well as general-purpose server tuning.
 
-<div align="center">
+> 🚧 **Status:** v2 is under active development (Phase 1 — core and
+> infrastructure complete). The old stable script is frozen under
+> [`legacy/`](legacy/) and no longer receives updates.
 
-[نسخه فارسی (Persian Version)](README.md) 👈
+## Design principles
 
-</div>
+- **Zero footprint** — one-shot tool: it writes kernel-level settings and
+  exits. No daemons, no cron, no telemetry. Whether 100 or 100,000 users are
+  connected, ServerTools consumes nothing at runtime.
+- **Layered optimization** — a base layer (always applied, whole server),
+  a workload layer (VPN node / panel / general — auto-detected or manually
+  chosen), and an optional layer (firewall, SSH hardening, …).
+- **Capacity-aware** — conntrack and buffer sizing follow a capacity tier
+  (up to 100k+ concurrent users) with the kernel RAM cost estimated up front.
+- **Real rollback** — every change is recorded in a manifest; a pristine
+  `original/` copy of each touched file is kept forever.
+- **Tested quality** — ShellCheck + shfmt in CI; boot-tested on
+  Ubuntu 20.04/22.04/24.04 and Debian 11/12.
 
-## 📖 Project Introduction
-**VPN Server Optimizer V4** is a production-grade Bash script specifically designed to tune and optimize Linux servers running **Xray, Marzban, Sing-box, and V2Ray** protocols.
+## Install & run
 
-Unlike cluttered, legacy scripts that compromise system stability with unnecessary changes, this "Gold Edition" focuses on **safe, engineered, and reversible** optimizations. This tool intelligently detects your server's RAM and applies the most precise settings for TCP buffers and Swap management.
-
----
-
-## ✨ Key Features
-
-| Feature | Description |
-| :--- | :--- |
-| 🚀 **Kernel Tuning** | Enables **BBR + FQ** congestion control algorithm for maximum bandwidth and reduced latency. |
-| 🛡️ **Network Stack** | Optimizes `sysctl` parameters to handle thousands of concurrent connections (High Concurrency). |
-| ⚡ **Smart Swap** | Auto-detects RAM; creates Swap (2GB or 4GB) only if necessary to prevent OOM crashes. |
-| 🔓 **Limit Unlock** | Increases Open File Limits (`ulimit`) to **262,144** for both the system and services. |
-| 🌐 **DNS Optimization** | Sets Cloudflare and Google DNS on `systemd-resolved` to improve resolution speed. |
-| ⏱️ **Connection Stability** | Fine-tunes `tcp_keepalive` to prevent "Connection Closed" errors on V2Ray clients. |
-| 🧹 **Auto Maintenance** | Includes Time Synchronization (NTP), log clearing, and removal of unnecessary packages. |
-
----
-
-## 📥 Installation
-
-Run the following command with **root** privileges in your server terminal:
+v2 development preview:
 
 ```bash
-wget -qO opt.sh https://raw.githubusercontent.com/Sir-Adnan/server-tools/refs/heads/main/opt.sh && chmod +x opt.sh && ./opt.sh
-
+bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/dist/server-tools.sh)
 ```
 
----
+Legacy (V15.2.0, frozen):
 
-## ⚙️ Technical Details & Performance
-
-When you execute the script, the following kernel-level changes are applied:
-
-### 1. TCP & BBR Optimization
-
-* **Congestion Control:** Forces the kernel to use `bbr` with the `fq` queuing discipline.
-* **TCP Fast Open:** Enabled (value 3) to reduce initial connection handshake latency.
-* **Buffers:** Increases `rmem` and `wmem` to approximately 33MB (Ideal for 1Gbps+ ports).
-
-### 2. Xray/V2Ray Specific Settings
-
-Default Linux timeouts often cause VPN connections to drop. We adjust these values:
-
-```properties
-net.ipv4.tcp_keepalive_time = 600   # 10 minutes
-net.ipv4.tcp_keepalive_intvl = 60
-net.ipv4.tcp_keepalive_probes = 5
-
+```bash
+bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/legacy/opt.sh)
 ```
 
-*Result:* User connections remain active during idle times, preventing unexpected drops.
+CLI options: `--status`, `--rollback`, `--no-color`, `--debug`,
+`-v/--version`, `-h/--help`. Interactive menu starts when no action is given.
 
-### 3. Smart Swap Management
+## Roadmap
 
-The script checks your available RAM:
+1. **Phase 1 (done)** — skeleton, core runtime, build system, CI.
+2. **Phase 2** — optimization modules (sysctl/DNS/swap/limits), profiles,
+   capacity tiers ([spec](docs/SYSCTL.md)).
+3. **Phase 3** — security (UFW/fail2ban/SSH), VPN-aware tuning, network tools.
+4. **Phase 4** — non-interactive `--auto`, `st` installer, self-update,
+   first stable release.
 
-* **RAM ≤ 2GB:** Creates 2GB Swap.
-* **RAM ≤ 4GB:** Creates 4GB Swap.
-* **RAM > 4GB:** No Swap created (To preserve NVMe/SSD lifespan and ensure high performance).
+See [docs/](docs/) for architecture and specs, and [CLAUDE.md](CLAUDE.md) for
+the engineering rules. Persian documentation: [README.md](README.md).
 
-### 4. File Descriptors Limits
-
-The default Linux limit (1024) is too low for VPN servers.
-
-* **Hard/Soft Limit:** Increased to `262144`.
-* **Systemd Global:** Applies changes to all services via `/etc/systemd/system.conf`.
-
----
-
-## 🖥️ User Menu
-
-The script features a simple, interactive interface:
-
-1. **🚀 Start Full Optimization:** Initiates the complete optimization process (Zero to Hero).
-2. **📊 System Status:** Displays current network algorithm, swap status, and limits.
-3. **🔄 Reboot Server:** Quick reboot to apply kernel changes.
-
----
-
-## ⚠️ Prerequisites
-
-* **OS:** Ubuntu 20.04+ or Debian 10+ (Recommended).
-* **Access:** Must be run as `root` (use `sudo -i`).
-* **Virtualization:** KVM / VMware / Xen (OpenVZ virtualization may not support BBR).
-
----
-
-## 📞 Support & Contact
-
-If you have questions or find a bug, you can contact the developer via Telegram:
-
-<a href="https://t.me/UnknownZero">🐦‍🔥 Telegram: @UnknownZero</a>
-
----
-
-## 📜 Disclaimer
-
-This script modifies system configurations (`sysctl`, `limits`, `fstab`). While tested on production servers, it is recommended to have a backup before running it on critical infrastructure.
-
-<div align="center">
-
-**If you found this script useful, please give the project a ⭐️ (Star)!**
-
-</div>
+**Creator:** UnknownZero — Telegram **@UnknownZero** · License: [MIT](LICENSE)

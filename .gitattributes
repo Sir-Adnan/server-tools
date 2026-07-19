@@ -1,0 +1,5 @@
+# Shell scripts must always be LF — CRLF breaks bash on the target servers.
+* text=auto
+*.sh text eol=lf
+Makefile text eol=lf
+VERSION text eol=lf

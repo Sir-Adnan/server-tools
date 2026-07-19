@@ -1,187 +1,95 @@
-# 🚀 VPN Server Optimizer (opt.sh) — V14.4.0
+# 🧰 ServerTools
 
-اسکریپت **بهینه‌سازی سرور لینوکس برای VPN** (مخصوص استفاده‌های سنگین و تعداد کاربر بالا)  
-مناسب برای: **Xray (Reality / TCP / WS / gRPC)** و **Hysteria2 (UDP/QUIC)**
+ابزار **بهینه‌سازی سرور لینوکس** — ساخته‌شده برای سرورهای زیرساخت VPN
+(نودهای Xray/Reality مثل `marzban-node` و `pg-node`، پنل‌های Marzban/Pasarguard،
+WireGuard و x-ui) و همچنین بهینه‌سازی عمومی هر سرور لینوکسی.
 
----
-## 📋 جدول ویژگی‌ها و امکانات (Features)
-
-| دسته‌بندی | قابلیت | توضیح کوتاه | اثر روی عملکرد |
-|---|---|---|---|
-| 🌐 شبکه / TCP | ✅ فعال‌سازی BBR | فعال‌سازی BBR در صورت پشتیبانی کرنل + بارگذاری ماژول | 📉 کاهش تأخیر در ازدحام، 📈 پایداری بهتر |
-| 🌐 شبکه / Queue | ✅ Qdisc هوشمند | انتخاب خودکار `fq` برای BBR یا `fq_codel` برای fallback | 🎯 کاهش Bufferbloat، 📉 جیتر کمتر |
-| 🧠 Sysctl Tuning | ✅ تنظیمات سنگین شبکه | افزایش backlog، بهینه‌سازی SYN backlog، پورت‌رنج، و… | 🚀 افزایش ظرفیت کاربران همزمان |
-| 🧠 Buffer Tuning | ✅ بافرهای TCP/UDP | افزایش `rmem/wmem` برای throughput بهتر (با مقدار امن) | 📈 سرعت دانلود/آپلود بهتر |
-| 🧩 Conntrack | ✅ کانترک پویا | تنظیم `nf_conntrack_max` بر اساس RAM (با سقف امن) | ✅ تحمل اتصالات زیاد بدون Drop |
-| 📡 DNS | ✅ انتخاب DNS آماده | Cloudflare / Google / Quad9 / OpenDNS / Shecan | ⚡ پاسخ DNS سریع‌تر، کاهش Delay |
-| 📡 DNS | ✅ DNS سفارشی | امکان وارد کردن DNS دلخواه | 🧩 انعطاف کامل |
-| 🛠️ DNS Stack | ✅ سازگاری کامل | پشتیبانی از `systemd-resolved` و `/etc/resolv.conf` | ✅ جلوگیری از تداخل و DNS Leak |
-| 📏 MTU | ✅ MTU Optimization | تشخیص MTU امن با DF Ping و جلوگیری از Fragmentation | 📉 پینگ کمتر، ✅ پایداری Reality/TCP |
-| 🧠 CPU / IRQ | ✅ irqbalance | تقسیم بار IRQ/softirq بین هسته‌های CPU | 📉 جیتر کمتر زیر فشار |
-| 🔧 NIC | ✅ Ring Buffer Tuning | تنظیم RX/TX ring با `ethtool` (Fail-safe) | 📈 throughput بهتر، Drop کمتر |
-| 🔧 NIC | ✅ Fail-safe کامل | اول قابلیت NIC بررسی می‌شود، سپس اعمال می‌شود | ✅ بدون ریسک خراب‌کاری |
-| 💾 Swap | ✅ ساخت Swap هوشمند | اگر swap فعال نباشد ایجاد می‌شود (سایز امن) | ✅ جلوگیری از OOM در پیک |
-| 🔐 Firewall | ✅ UFW اختیاری | نصب/فعال‌سازی UFW، اجازه SSH و پورت‌های دلخواه | 🔒 امنیت بهتر بدون قطع SSH |
-| 🧾 Logging | ✅ لاگ‌گیری مقاوم | لاگ در `/var/log` و در صورت محدودیت در `/tmp` | 🧠 عیب‌یابی راحت‌تر |
-| 🧾 Rotation | ✅ چرخش لاگ | بر اساس حجم/تعداد/مدت نگهداری | 🧹 جلوگیری از پر شدن دیسک |
-| ♻️ Backup | ✅ بکاپ کامل | بکاپ فایل‌های تغییر یافته در مسیر جداگانه | 🛡️ امکان بازگشت سریع |
-| ♻️ Rollback | ✅ بازگشت امن | بازگردانی تغییرات به آخرین بکاپ (latest) | 🧯 رفع مشکل در چند ثانیه |
-| 🖥️ UI | ✅ ظاهر سازگار | محیط ASCII-only برای ترمینال‌های مشکل‌دار | ✅ بدون `????` و بهم‌ریختگی |
-| 📊 Status | ✅ System Status کامل | نمایش OS/CPU/RAM/IP/DNS/BBR/MTU/irqbalance | 🔍 شفافیت کامل وضعیت سرور |
-
----
-## ✨ ویژگی‌ها (Features)
-
-### 🌐 شبکه و TCP/UDP Tuning
-- ✅ فعال‌سازی **BBR** (در صورت پشتیبانی کرنل) + انتخاب خودکار **Qdisc** مناسب
-- ✅ تنظیمات پیشرفته‌ی `sysctl` برای:
-  - افزایش توان پردازش اتصالات همزمان
-  - کاهش لگ و بهبود پایداری تحت فشار
-  - بهینه‌سازی بافرهای TCP/UDP برای سرعت بهتر
-  - افزایش `nf_conntrack_max` بر اساس RAM (با سقف امن)
-
-### 📡 DNS Manager
-- ✅ تغییر DNS سرور به یکی از گزینه‌ها:
-  - Cloudflare / Google / Quad9 / OpenDNS / Shecan
-  - یا DNS دلخواه (Custom)
-- ✅ سازگار با:
-  - `systemd-resolved` (Drop-in config + resolvectl)
-  - یا `resolv.conf` (در سیستم‌های بدون resolved)
-
-### 📏 MTU Optimization (Safe)
-- ✅ تشخیص **بهترین MTU قابل‌اعتماد** با تست Ping و جلوگیری از Fragment
-- ✅ اعمال MTU به صورت Runtime و در صورت وجود Netplan (Persist)
-- 🎯 مفید برای Reality/TCP و کاهش مشکلات قطع و ناپایداری شبکه
-
-### 🧠 CPU Load Balancing (IRQ)
-- ✅ نصب/فعال‌سازی `irqbalance`
-- 🎯 کمک به تقسیم فشار SoftIRQ روی هسته‌های CPU  
-  (روی بعضی VMها اثر کمتره، ولی کم‌ریسک و ارزشمند)
-
-### 🔧 NIC Ring Buffer Tuning (ethtool)
-- ✅ تنظیم هوشمند RX/TX Ring Buffers با `ethtool`
-- ✅ **Fail-safe**:
-  - اول قابلیت NIC بررسی می‌شود (`ethtool -g`)
-  - سپس در صورت پشتیبانی تلاش به افزایش انجام می‌گیرد
-  - اگر امکان‌پذیر نبود بدون خطا رد می‌شود
-
-### 🧾 Logging + Backup + Rollback
-- ✅ لاگ‌گیری امن:
-  - تلاش برای `/var/log/...`
-  - در صورت محدودیت، انتقال خودکار به `/tmp/...`
-- ✅ Rotate لاگ بر اساس حجم/تعداد/زمان
-- ✅ بکاپ‌گیری از فایل‌های تغییریافته در:
-  - `/root/vpn_optimizer_backups/<RUN_ID>/`
-  - و لینک `latest` برای آخرین اجرا
-- ✅ Rollback امن به آخرین بکاپ
-
-### 🧰 Firewall (UFW)
-- ✅ نصب و پیکربندی UFW (اختیاری)
-- ✅ تشخیص پورت SSH و باز گذاشتن آن
-- ✅ امکان افزودن پورت‌های اضافی (مثلاً 80/443/UDP…)
-
-### 🖥️ UI تمیز و سازگار
-- ✅ رابط کاربری **ASCII-only** (بدون یونیکد/ایموجی داخل خروجی ترمینال)
-- ✅ مناسب برای ترمینال‌هایی که یونیکد را خراب نمایش می‌دهند (رفع مشکل `????`)
-- ✅ منوی مرتب + Progress Bar ساده و شفاف
+> 🚧 **وضعیت:** نسخه ۲ در حال توسعه است (فاز ۱ — هسته و زیرساخت کامل شده).
+> نسخه پایدار قدیمی در پوشه [`legacy/`](legacy/) نگهداری می‌شود و دیگر آپدیت نمی‌گیرد.
 
 ---
 
-## ✅ نصب و اجرا
+## ✨ اصول طراحی v2
 
-### 📥 روش پیشنهادی (Recommended)
-```bash
-wget -qO opt.sh "https://raw.githubusercontent.com/Sir-Adnan/server-tools/refs/heads/main/opt.sh" \
-&& chmod +x opt.sh \
-&& bash opt.sh
-````
+| اصل | توضیح |
+|---|---|
+| ⚡ **مصرف صفر** | ابزار one-shot است: تنظیمات را در کرنل اعمال می‌کند و خارج می‌شود. هیچ daemon، هیچ cron، هیچ telemetry. چه ۱۰۰ کاربر متصل باشد چه ۱۰۰هزار، سهم ServerTools از CPU/RAM صفر است. |
+| 🧱 **بهینه‌سازی لایه‌ای** | لایه پایه (همیشه، کل سرور) + لایه تخصصی (نود VPN / پنل / عمومی — با تشخیص خودکار یا انتخاب دستی) + لایه اختیاری (فایروال، امنیت SSH و…). |
+| 📊 **ظرفیت‌محور** | تنظیمات conntrack و بافرها بر اساس Capacity Tier (تا +100k کاربر همزمان) با نمایش تخمین مصرف RAM کرنل قبل از اعمال. |
+| ♻️ **رول‌بک واقعی** | هر تغییر در manifest ثبت می‌شود؛ نسخه دست‌نخورده (original) هر فایل برای همیشه نگه داشته می‌شود. |
+| 🧪 **کیفیت تست‌شده** | ShellCheck + shfmt در CI، تست بوت روی Ubuntu 20.04/22.04/24.04 و Debian 11/12. |
 
-> چرا `bash opt.sh`؟ چون در بعضی سرورها mount با `noexec` باعث می‌شود `./opt.sh` اجرا نشود.
+## 📥 نصب و اجرا
 
-### روش معمول
+### نسخه ۲ (پیش‌نمایش توسعه)
 
 ```bash
-wget -qO opt.sh "https://raw.githubusercontent.com/Sir-Adnan/server-tools/refs/heads/main/opt.sh" \
-&& chmod +x opt.sh \
-&& ./opt.sh
+bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/dist/server-tools.sh)
 ```
 
----
-
-## 📌 نیازمندی‌ها (Requirements)
-
-* ✅ اجرا با **root**
-* ✅ پیشنهاد: Ubuntu/Debian (روی بقیه هم ممکن است کار کند ولی تست اصلی روی این‌هاست)
-* ✅ ابزارهای کمکی در صورت نیاز خودکار نصب می‌شوند:
-
-  * `irqbalance`
-  * `ethtool`
-  * `ufw`
-
----
-
-## 📊 System Status چه چیزهایی نشان می‌دهد؟
-
-* 🖥️ OS / Kernel / Uptime / Hostname
-* 🧠 CPU Model / Cores / Load
-* 💾 RAM / Swap
-* 🌐 Interface / MTU / IPv4 / IPv6
-* 🌍 Public IPv4 / Public IPv6 (با ipify)
-* 📡 DNS فعلی و انتخاب‌شده
-* 📈 وضعیت TCP / BBR / Qdisc
-* ⚙️ وضعیت `irqbalance`
-
----
-
-## ♻️ Rollback (بازگشت به تنظیمات قبلی)
-
-از منو گزینه‌ی Rollback را بزنید.
-این کار فایل‌های تغییر یافته را با **آخرین بکاپ** بازگردانی می‌کند.
-
----
-
-## 🧯 عیب‌یابی (Troubleshooting)
-
-### ❗ اسکریپت اجرا می‌شود ولی چیزی نشان نمی‌دهد
-
-✅ این دستور را بزنید تا مرحله به مرحله نمایش دهد:
+پس از انتشار اولین نسخه پایدار، لینک توصیه‌شده از GitHub Releases (همراه با checksum) خواهد بود:
 
 ```bash
-bash -x opt.sh
+bash <(curl -fsSL4 https://github.com/Sir-Adnan/server-tools/releases/latest/download/server-tools.sh)
 ```
 
-### 📄 لاگ‌ها کجا هستند؟
-
-* مسیر اصلی:
-
-  * `/var/log/vpn_optimizer.log`
-* اگر محدودیت وجود داشته باشد:
-
-  * `/tmp/vpn_optimizer.log`
-
-### 🧩 اگر BBR فعال نشد
-
-* کرنل باید حداقل **4.9** باشد
-* بررسی:
+### نسخه قدیمی (Legacy — V15.2.0، فریزشده)
 
 ```bash
-sysctl net.ipv4.tcp_congestion_control
-sysctl net.ipv4.tcp_available_congestion_control
+bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main/legacy/opt.sh)
 ```
 
----
+> ⚠️ مسیر قبلی `main/opt.sh` به `main/legacy/opt.sh` منتقل شده است.
 
-## 🔐 نکته امنیتی
+### گزینه‌های CLI (نسخه ۲)
 
-این اسکریپت برای بهینه‌سازی سیستم ساخته شده و جایگزین تنظیمات امنیتی حرفه‌ای نیست.
-برای سرورهای عمومی پیشنهاد می‌شود:
+```text
+--status      نمایش گزارش کامل وضعیت سیستم و خروج
+--rollback    بازگردانی آخرین اجرای ثبت‌شده و خروج
+--no-color    خروجی بدون رنگ
+--debug       لاگ کامل
+-v, --version | -h, --help
+```
 
-* UFW یا فایروال مناسب
-* محدودسازی دسترسی SSH (کلید، IP محدود، Fail2ban)
+## 🗺️ نقشه راه
 
----
+- [x] **فاز ۱** — اسکلت پروژه، هسته (UI/لاگ/State/Backup/Detect)، سیستم Build، CI
+- [ ] **فاز ۲** — ماژول‌های بهینه‌سازی (sysctl / DNS / Swap / Limits) + پروفایل‌ها + Capacity Tier
+- [ ] **فاز ۳** — امنیت (UFW / fail2ban / SSH)، تنظیمات VPN-aware (IPv6 forwarding، MSS clamp، Docker+UFW)، ابزارهای تست شبکه
+- [ ] **فاز ۴** — حالت `--auto` غیرتعاملی، دستور `st`، self-update، اولین انتشار پایدار
+
+مشخصات فنی هر فاز در [docs/](docs/) ثبت شده است:
+[ARCHITECTURE](docs/ARCHITECTURE.md) ·
+[PROFILES](docs/PROFILES.md) ·
+[SYSCTL](docs/SYSCTL.md) ·
+[ROLLBACK](docs/ROLLBACK.md) ·
+[FAQ فارسی](docs/FAQ.md)
+
+## 🏗️ ساختار مخزن
+
+```text
+src/            سورس ماژولار (core/ + modules/ + menu + main)
+build.sh        کامپایل src/ به یک فایل واحد
+dist/           خروجی build — فایلی که کاربر نهایی اجرا می‌کند
+docs/           مستندات معماری و مشخصات فنی
+tests/          تست‌های smoke
+legacy/         نسخه ۱ (فریزشده، بدون آپدیت)
+```
+
+## 🛠️ توسعه
+
+```bash
+./build.sh        # ساخت dist/server-tools.sh
+make lint         # shellcheck + shfmt
+./tests/smoke.sh  # تست سریع بدون نیاز به root
+```
+
+قوانین کدنویسی و اصول پروژه در [CLAUDE.md](CLAUDE.md) ثبت شده‌اند — از جمله:
+هیچ وابستگی جدید، هیچ `|| true` بی‌دلیل، ثبت هر تغییر فایل در manifest قبل از اعمال.
 
 ## 👤 سازنده
 
-* Creator: **UnknownZero**
-* Telegram ID: **@UnknownZero**
+- Creator: **UnknownZero** — Telegram: **@UnknownZero**
+- License: [MIT](LICENSE)
+
+*English documentation: [README_en.md](README_en.md)*

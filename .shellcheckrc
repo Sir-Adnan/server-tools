@@ -1,0 +1,4 @@
+shell=bash
+
+# SC1091: "not following sourced file" — we intentionally source /etc/os-release.
+disable=SC1091

@@ -1,0 +1,148 @@
+# shellcheck shell=bash
+# ============================================================================
+# core/utils.sh — small dependency-free helpers: command/root checks,
+# OS facts (from /proc and /etc/os-release), network facts, cached public IP.
+# ============================================================================
+
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+require_root() {
+  ((EUID == 0)) || die "This tool must be run as root (try: sudo -i)."
+}
+
+os_pretty_name() {
+  local name=''
+  if [[ -r /etc/os-release ]]; then
+    name="$(. /etc/os-release 2>/dev/null && printf '%s' "${PRETTY_NAME:-}")" || name=''
+  fi
+  printf '%s' "${name:-unknown}"
+}
+
+kernel_release() { uname -r 2>/dev/null || printf 'unknown'; }
+
+kernel_base() {
+  local rel
+  rel="$(kernel_release)"
+  printf '%s' "${rel%%-*}"
+}
+
+detect_virt() {
+  local virt=''
+  if has_cmd systemd-detect-virt; then
+    # Exit code 1 simply means "not virtualised"; the answer is on stdout.
+    virt="$(systemd-detect-virt 2>/dev/null)" || true
+  fi
+  printf '%s' "${virt:-unknown}"
+}
+
+mem_total_mb() {
+  awk '/^MemTotal:/ {print int($2 / 1024); exit}' /proc/meminfo 2>/dev/null || printf '0'
+}
+
+cpu_cores() {
+  if has_cmd nproc; then
+    nproc
+  else
+    grep -c '^processor' /proc/cpuinfo 2>/dev/null || printf '1'
+  fi
+}
+
+cpu_model() {
+  local model
+  model="$(awk -F': *' '/^(model name|Model)/ {print $2; exit}' /proc/cpuinfo 2>/dev/null)" || model=''
+  printf '%s' "${model:-unknown}"
+}
+
+uptime_pretty() {
+  local secs
+  secs="$(cut -d. -f1 /proc/uptime 2>/dev/null)" || secs=''
+  [[ $secs =~ ^[0-9]+$ ]] || {
+    printf 'unknown'
+    return 0
+  }
+  printf '%dd %dh %dm' $((secs / 86400)) $((secs % 86400 / 3600)) $((secs % 3600 / 60))
+}
+
+load_avg() {
+  cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || printf 'unknown'
+}
+
+# ver_ge A B — true when dotted version A >= B.
+ver_ge() {
+  [[ "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" == "$2" ]]
+}
+
+is_valid_ipv4() {
+  local ip="$1" octet
+  [[ $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+  local IFS='.'
+  for octet in $ip; do
+    ((octet <= 255)) || return 1
+  done
+  return 0
+}
+
+net_default_iface() {
+  has_cmd ip || return 0
+  ip route show default 2>/dev/null |
+    awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}'
+}
+
+net_default_gw() {
+  has_cmd ip || return 0
+  ip route show default 2>/dev/null |
+    awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}'
+}
+
+# sysctl_get KEY — current value or "?" when unavailable.
+sysctl_get() {
+  local value
+  if has_cmd sysctl; then
+    value="$(sysctl -n "$1" 2>/dev/null)" || value=''
+  fi
+  printf '%s' "${value:-?}"
+}
+
+# --- Public IP (fetched once per process, then cached — the menu redraws
+# --- must never block on network calls).
+ST_CACHE_IP4=''
+ST_CACHE_IP6=''
+
+_net_fetch() { # _net_fetch 4|6 URL
+  has_cmd curl || return 1
+  curl "-$1" -fsS --max-time 3 "$2" 2>/dev/null | tr -d '[:space:]'
+}
+
+net_public_ip4() {
+  if [[ -z $ST_CACHE_IP4 ]]; then
+    local ip='' url
+    for url in 'https://api.ipify.org' 'https://ifconfig.me/ip' 'https://ip.sb'; do
+      ip="$(_net_fetch 4 "$url")" || ip=''
+      is_valid_ipv4 "$ip" && break
+      ip=''
+    done
+    if [[ -z $ip ]] && has_cmd ip; then
+      ip="$(ip -4 addr show scope global 2>/dev/null |
+        awk '/inet / {sub(/\/.*/, "", $2); print $2; exit}')" || ip=''
+    fi
+    ST_CACHE_IP4="${ip:-N/A}"
+  fi
+  printf '%s' "$ST_CACHE_IP4"
+}
+
+net_public_ip6() {
+  if [[ -z $ST_CACHE_IP6 ]]; then
+    local ip='' url
+    for url in 'https://api64.ipify.org' 'https://ifconfig.me/ip'; do
+      ip="$(_net_fetch 6 "$url")" || ip=''
+      [[ $ip == *:* ]] && break
+      ip=''
+    done
+    if [[ -z $ip ]] && has_cmd ip; then
+      ip="$(ip -6 addr show scope global 2>/dev/null |
+        awk '/inet6 / {sub(/\/.*/, "", $2); print $2; exit}')" || ip=''
+    fi
+    ST_CACHE_IP6="${ip:-N/A}"
+  fi
+  printf '%s' "$ST_CACHE_IP6"
+}
