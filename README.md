@@ -64,14 +64,6 @@ bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main
 st --auto --profile vpn-node --users 10000 --dns cloudflare
 ```
 
-## 🗺️ نقشه راه
-
-- [x] فاز ۱ — اسکلت پروژه، هسته (UI/لاگ/State/Backup/Detect)، سیستم Build، CI
-- [x] فاز ۲ — ماژول‌های بهینه‌سازی (sysctl / DNS / Swap+zram / Limits) + پروفایل‌ها + ظرفیت
-- [x] فاز ۳ — امنیت (UFW / fail2ban / SSH)، تنظیمات VPN-aware (کلمپ MSS، Docker+UFW)، ابزارهای تست شبکه
-- [x] فاز ۴ — حالت `--auto` غیرتعاملی، دستور `st`، آپدیت خودکار
-- [ ] انتشار v2.0.0 — پس از تست روی سرور واقعی (معیارها در ROADMAP)
-
 جزئیات کامل فازها، ایده‌های آینده و معیارهای انتشار در [ROADMAP.md](ROADMAP.md) است.
 
 مستندات فنی:
