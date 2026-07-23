@@ -27,6 +27,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 - The post-limits restart offer missed containers whose name does not carry
   the product (a pg-node container is often just `node`); it now matches on
   name and image, covers podman, and warns that a restart disconnects users.
+- The same restart offer asked nothing at all even when it found containers:
+  the loop fed the container list on stdin, so the `read` inside the
+  confirmation consumed it instead of the user's answer — and bash suppresses
+  a prompt entirely when stdin is not a terminal. The list is now read
+  through a dedicated file descriptor.
 
 ### Added
 

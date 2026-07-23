@@ -149,8 +149,11 @@ _offer_service_restart() {
     return 0
   fi
 
+  # The list is read through FD 3 on purpose: with the list on stdin, the
+  # `read` inside ui_confirm would consume it instead of the user's answer —
+  # and bash hides the prompt entirely when stdin is not a terminal.
   local engine_name name
-  while IFS=$'\t' read -r engine_name name; do
+  while IFS=$'\t' read -r engine_name name <&3; do
     [[ -n $name ]] || continue
     if ui_confirm "Restart ${engine_name} container '${name}' now so it picks up the new limits?"; then
       if "$engine_name" restart "$name" >/dev/null 2>>"$ST_LOG_FILE"; then
@@ -159,7 +162,7 @@ _offer_service_restart() {
         log_warn "Could not restart ${name}."
       fi
     fi
-  done <<<"$containers"
+  done 3<<<"$containers"
 
   local svc
   for svc in xray x-ui sing-box hysteria-server; do
