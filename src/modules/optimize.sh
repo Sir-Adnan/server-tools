@@ -117,6 +117,7 @@ snapshot_report() {
 st_report_summary() {
   local entry status _title ok=0 warn=0 fail=0 skip=0
   for entry in "${ST_STEP_RESULTS[@]-}"; do
+    [[ -n $entry ]] || continue # empty array expands to one empty element
     IFS='|' read -r status _title <<<"$entry"
     case "$status" in
       ok) ok=$((ok + 1)) ;;

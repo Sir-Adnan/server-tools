@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.2] — 2026-07-23
+
+### Fixed
+
+- **Reserved service ports were mostly wrong.** `sub()` turns an awk field
+  into a string, so `$5 >= 10240` compared text — `"22"` ranks above
+  `"10240"` — and ports such as 22, 53, 443 and 1080 ended up in
+  `ip_local_reserved_ports` while genuine high ports (a node API on 62050)
+  were pushed out by the 64-entry cap. The comparison is numeric now.
+- **Transient proxy sockets are no longer reserved.** A node's short-lived
+  outbound UDP sockets show up in `ss -uln` exactly like real servers, so
+  the list churned every second and Doctor reported drift constantly. TCP
+  listeners are taken as-is; UDP is sampled twice a second apart and only
+  the intersection (WireGuard, Hysteria, …) is kept. Apply and Doctor share
+  the same source, so their expectations always match.
+- `--dry-run` printed a stray `->` line when nothing had drifted (iterating
+  `"${arr[@]-}"` over an empty array yields one empty element); the summary
+  counter had the same pattern.
+
 ## [2.1.1] — 2026-07-23
 
 ### Fixed

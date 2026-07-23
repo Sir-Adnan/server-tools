@@ -121,6 +121,37 @@ qdisc_supported() {
   return 0
 }
 
+# _ss_ports_in_range SS_OUTPUT — local ports inside the ephemeral range.
+# The "+ 0" is not decoration: sub() turns the field into a string, and a
+# string comparison would rank "22" above "10240" and let it through.
+_ss_ports_in_range() {
+  awk 'NR > 1 {
+        p = $4
+        sub(/.*:/, "", p)
+        if (p ~ /^[0-9]+$/ && p + 0 >= 10240 && p + 0 <= 65535) print p
+      }' <<<"$1" | sort -un
+}
+
+# listening_service_ports — ports of REAL services inside the ephemeral
+# range (10240-65535), one per line.
+#
+# TCP listeners are stable by definition. UDP is sampled twice a second
+# apart and intersected: a proxy's short-lived outbound sockets also appear
+# as UNCONN, and reserving those would fill the list with noise that changes
+# every second — pushing genuine ports (a node API port, WireGuard) out.
+listening_service_ports() {
+  has_cmd ss || return 0
+  local tcp udp1 udp2
+  tcp="$(ss -tln 2>/dev/null)" || tcp=''
+  udp1="$(ss -uln 2>/dev/null)" || udp1=''
+  sleep 1
+  udp2="$(ss -uln 2>/dev/null)" || udp2=''
+  {
+    _ss_ports_in_range "$tcp"
+    comm -12 <(_ss_ports_in_range "$udp1") <(_ss_ports_in_range "$udp2")
+  } | sort -un
+}
+
 # net_dns_capable_links — links worth carrying a DNS override: everything
 # that is up, minus loopback and container/virtual bridges.
 net_dns_capable_links() {

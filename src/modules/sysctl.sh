@@ -54,10 +54,7 @@ sysctl_detect_bbr() {
 # `reserved_ports` config key (comma separated) for inbounds added later.
 _sysctl_reserved_ports() {
   local detected='' extra
-  if has_cmd ss; then
-    detected="$(ss -tuln 2>/dev/null |
-      awk 'NR > 1 {sub(/.*:/, "", $5); if ($5 ~ /^[0-9]+$/ && $5 >= 10240 && $5 <= 65535) print $5}')" || detected=''
-  fi
+  detected="$(listening_service_ports)" || detected=''
   extra="$(config_get reserved_ports '')"
   [[ -n $extra ]] && detected+=$'\n'"${extra//,/$'\n'}"
   [[ -n $detected ]] || return 0
@@ -296,11 +293,16 @@ sysctl_dry_run() {
   local entry key actual expected total
   total="$(grep -cE '^-?[a-z]' <<<"$rendered")"
   sysctl_verify "$rendered" || true # drift is the expected outcome here
-  for entry in "${ST_SYSCTL_DRIFT[@]-}"; do
-    IFS='|' read -r key actual expected <<<"$entry"
-    printf '  %s%-50s%s %s -> %s\n' "$C_KEY" "$key" "$C_RESET" "$actual" "$expected"
-  done
-  ((${#ST_SYSCTL_DRIFT[@]} == 0)) && printf '  (kernel already matches this profile)\n'
+  if ((${#ST_SYSCTL_DRIFT[@]} == 0)); then
+    printf '  (kernel already matches this profile)\n'
+  else
+    # Guarded: iterating "${arr[@]-}" on an empty array yields one empty
+    # element, which would print a bare "->" row.
+    for entry in "${ST_SYSCTL_DRIFT[@]}"; do
+      IFS='|' read -r key actual expected <<<"$entry"
+      printf '  %s%-50s%s %s -> %s\n' "$C_KEY" "$key" "$C_RESET" "$actual" "$expected"
+    done
+  fi
   printf '\n%s%d of %d keys would change. Nothing was applied.%s\n' \
     "$C_WARN" "${#ST_SYSCTL_DRIFT[@]}" "$total" "$C_RESET"
 }

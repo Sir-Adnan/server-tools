@@ -123,17 +123,17 @@ doctor_run() {
 # _doctor_unreserved_ports — listening ports inside the ephemeral range that
 # the current sysctl file does not reserve (typically inbounds added later).
 _doctor_unreserved_ports() {
-  has_cmd ss || return 0
   [[ -f $ST_SYSCTL_FILE ]] || return 0
   local reserved port missing=''
   reserved="$(awk -F'= *' '/ip_local_reserved_ports/ {print $2; exit}' "$ST_SYSCTL_FILE")" || reserved=''
   [[ -n $reserved ]] || return 0
 
+  # Same source as the apply step, so a service that started later shows up
+  # while transient proxy sockets do not raise a false alarm.
   while IFS= read -r port; do
     [[ $port =~ ^[0-9]+$ ]] || continue
     _port_in_reserved_list "$port" "$reserved" || missing+="${port} "
-  done < <(ss -tuln 2>/dev/null |
-    awk 'NR > 1 {sub(/.*:/, "", $5); if ($5 ~ /^[0-9]+$/ && $5 >= 10240 && $5 <= 65535) print $5}' | sort -un)
+  done < <(listening_service_ports)
 
   printf '%s' "${missing% }"
 }
