@@ -41,3 +41,59 @@ EOF
   log_info "nofile limits set to 1048576 (PAM + systemd drop-in)."
   return 0
 }
+
+# limits_verify — 0 when the systemd manager default is already raised.
+limits_verify() {
+  [[ -f $ST_LIMITS_FILE ]] || return 2
+  has_cmd systemctl || return 0
+  local current
+  current="$(systemctl show -p DefaultLimitNOFILE --value 2>/dev/null)" || current=''
+  [[ $current =~ ^[0-9]+$ ]] || return 3
+  ((current >= 1048576)) && return 0
+  return 3
+}
+
+# limits_docker_ulimits — containers inherit their file limit from the
+# container engine, never from limits.d. Editing an existing daemon.json
+# safely needs a JSON parser we cannot depend on, so an existing file is
+# only reported: printing the exact snippet is better than corrupting it.
+limits_docker_ulimits() {
+  local daemon='/etc/docker/daemon.json'
+  ui_section "Docker container file limits"
+  if ! has_cmd docker; then
+    printf 'Docker is not installed on this server.\n'
+    return 2
+  fi
+
+  if [[ -f $daemon ]]; then
+    if grep -q 'default-ulimits' "$daemon" 2>/dev/null; then
+      printf '%sAlready configured%s in %s.\n' "$C_OK" "$C_RESET" "$daemon"
+      return 0
+    fi
+    printf '%s exists and cannot be edited safely without a JSON parser.\n' "$daemon"
+    printf 'Add this block yourself, then run: systemctl restart docker\n\n'
+    printf '  "default-ulimits": { "nofile": { "Name": "nofile", "Soft": 1048576, "Hard": 1048576 } }\n\n'
+    return 3
+  fi
+
+  printf 'Creating %s with a raised nofile limit for all containers.\n' "$daemon"
+  printf '%sRestarting Docker briefly interrupts every container on this host.%s\n' "$C_WARN" "$C_RESET"
+  ui_confirm "Write the file and restart Docker now?" || return 2
+
+  st_track_file "$daemon"
+  mkdir -p "$(dirname "$daemon")"
+  cat >"$daemon" <<'EOF'
+{
+  "default-ulimits": {
+    "nofile": { "Name": "nofile", "Soft": 1048576, "Hard": 1048576 }
+  }
+}
+EOF
+  if has_cmd systemctl && systemctl restart docker 2>>"$ST_LOG_FILE"; then
+    printf '%sDone.%s Containers started from now on get nofile=1048576.\n' "$C_OK" "$C_RESET"
+    log_info "docker daemon.json default-ulimits applied."
+    return 0
+  fi
+  log_error "Docker restart failed — check the log; daemon.json is tracked for rollback."
+  return 1
+}

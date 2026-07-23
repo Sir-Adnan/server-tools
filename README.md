@@ -51,12 +51,17 @@ bash <(curl -fsSL4 https://raw.githubusercontent.com/Sir-Adnan/server-tools/main
                 --profile NAME   --tier S|M|L|XL   --users N
                 --dns cloudflare|ip1,ip2   --no-swap  --no-limits  --no-extras
 --dry-run     نمایش پلن و diff دقیق sysctl بدون اعمال هیچ تغییری
+--verify      بررسی اینکه همه‌ی تنظیمات هنوز واقعاً اعمال هستند (Doctor)
 --report      گزارش متنی کامل برای تیکت/پشتیبانی (چاپ + ذخیره)
 --rollback    بازگردانی آخرین اجرای ثبت‌شده و خروج
+--rollback-original   بازگشت کامل به وضعیت قبل از اولین اجرای ابزار
 --install     نصب به‌عنوان دستور st
 --update      آپدیت خودکار از آخرین Release (با تأیید SHA-256)
+--json        خروجی ماشین‌خوان (برای --verify)
 --no-color    خروجی بدون رنگ · --debug لاگ کامل · -v نسخه · -h راهنما
 ```
+
+کدهای خروج (برای Ansible و CI): مقدار `0` یعنی همه‌چیز موفق، `1` یعنی حداقل یک مرحله شکست خورد، `2` یعنی خطای دستور، و `3` یعنی اعمال شد ولی با هشدار یا drift.
 
 نمونه برای مدیریت چند نود (Ansible/اسکریپت):
 

@@ -18,6 +18,26 @@ swap_is_active() {
   [[ -r /proc/swaps ]] && awk 'NR > 1 {found = 1} END {exit !found}' /proc/swaps
 }
 
+# swap_backend_active — zram | file | partition | none. The sysctl module
+# uses this to pick vm.swappiness: compressed RAM should be used eagerly,
+# a disk swap file should not.
+swap_backend_active() {
+  [[ -r /proc/swaps ]] || {
+    printf 'none'
+    return 0
+  }
+  awk 'NR > 1 {
+    if ($1 ~ /zram/) { print "zram"; exit }
+    print ($2 == "file" ? "file" : "partition"); exit
+  } END { if (NR < 2) print "none" }' /proc/swaps
+}
+
+# swap_verify — 0 when swap is available, 3 when the host has none at all.
+swap_verify() {
+  swap_is_active && return 0
+  return 3
+}
+
 # _swap_file_setup SIZE_MB
 _swap_file_setup() {
   local size_mb="$1" swapfile='/swapfile' fstype

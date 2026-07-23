@@ -62,6 +62,121 @@ tools_listening_ports() {
   ss -tulnp 2>/dev/null | awk 'NR <= 30' || log_warn "Could not list sockets."
 }
 
+# tools_speedtest — bandwidth check. Uses a real speedtest client when the
+# host already has one; otherwise a plain HTTP download, which needs nothing
+# but curl. Both consume traffic, so both ask first.
+tools_speedtest() {
+  ui_section "Bandwidth test"
+  if has_cmd speedtest; then
+    ui_confirm "Run speedtest (uses bandwidth)?" || return 2
+    speedtest || log_warn "speedtest exited with an error."
+    return 0
+  fi
+  if has_cmd speedtest-cli; then
+    ui_confirm "Run speedtest-cli (uses bandwidth)?" || return 2
+    speedtest-cli --simple || log_warn "speedtest-cli exited with an error."
+    return 0
+  fi
+
+  if ! has_cmd curl; then
+    printf 'Neither a speedtest client nor curl is available.\n'
+    return 2
+  fi
+  printf 'No speedtest client installed — measuring a 100 MB HTTP download\n'
+  printf 'instead (nothing gets installed).\n'
+  ui_confirm "Download 100 MB now?" || return 2
+
+  local speed
+  speed="$(curl -o /dev/null -fsS --max-time 60 -w '%{speed_download}' \
+    'https://speed.cloudflare.com/__down?bytes=104857600' 2>>"$ST_LOG_FILE")" || speed=''
+  if [[ -z $speed || $speed == 0* ]]; then
+    log_error "Download test failed — see the log."
+    return 1
+  fi
+  printf '%sDownload:%s %s\n' "$C_OK" "$C_RESET" \
+    "$(awk -v s="$speed" 'BEGIN {printf "%.1f Mbit/s (%.1f MB/s)", s * 8 / 1000000, s / 1048576}')"
+  log_info "Download speed measured: ${speed} B/s."
+  return 0
+}
+
+# tools_benchmark — rough CPU and disk figures from coreutils only. They are
+# comparable between servers, not absolute hardware ratings.
+tools_benchmark() {
+  ui_section "Quick benchmark (rough, coreutils only)"
+
+  if has_cmd sha256sum; then
+    local start end
+    start="$(date +%s%N)"
+    dd if=/dev/zero bs=1M count=256 status=none 2>/dev/null | sha256sum >/dev/null
+    end="$(date +%s%N)"
+    ui_kv "CPU (256 MB SHA256)" "$(awk -v n=$((end - start)) 'BEGIN {printf "%.2f s", n / 1000000000}')"
+  fi
+
+  local avail_mb
+  avail_mb="$(df -Pm /var/tmp 2>/dev/null | awk 'NR == 2 {print $4}')" || avail_mb=0
+  [[ $avail_mb =~ ^[0-9]+$ ]] || avail_mb=0
+  if ((avail_mb > 2048)); then
+    local out
+    out="$(dd if=/dev/zero of=/var/tmp/.st-bench bs=1M count=512 conv=fdatasync 2>&1 |
+      awk '/copied/ {print $(NF - 1), $NF}')" || out=''
+    rm -f /var/tmp/.st-bench
+    ui_kv "Disk write (512 MB)" "${out:-unavailable}"
+  else
+    ui_kv "Disk write" "skipped (needs 2 GB free in /var/tmp)"
+  fi
+
+  ui_kv "Cores / load" "$(cpu_cores) / $(load_avg)"
+  ui_kv "RAM" "$(mem_total_mb) MB"
+  return 0
+}
+
+# tools_watch — live view of what matters under load. A foreground viewer,
+# not a service: it exits when you leave and leaves nothing behind.
+tools_watch() {
+  if [[ ! -t 0 ]]; then
+    printf 'The live view needs an interactive terminal.\n'
+    return 2
+  fi
+  local iface rx_prev tx_prev rx tx ct max sockets key
+  iface="$(net_default_iface)" || iface=''
+  if [[ -z $iface || ! -r /sys/class/net/${iface}/statistics/rx_bytes ]]; then
+    printf 'Cannot read interface counters for the live view.\n'
+    return 2
+  fi
+  rx_prev="$(cat "/sys/class/net/${iface}/statistics/rx_bytes")"
+  tx_prev="$(cat "/sys/class/net/${iface}/statistics/tx_bytes")"
+
+  while true; do
+    sleep 2
+    rx="$(cat "/sys/class/net/${iface}/statistics/rx_bytes")"
+    tx="$(cat "/sys/class/net/${iface}/statistics/tx_bytes")"
+    ct="$(sysctl_get net.netfilter.nf_conntrack_count)"
+    max="$(sysctl_get net.netfilter.nf_conntrack_max)"
+    sockets="$(awk '/^TCP:/ {print $3; exit}' /proc/net/sockstat 2>/dev/null)" || sockets='?'
+
+    clear 2>/dev/null || true # cosmetic only
+    ui_title "Live view — ${iface} (press q to quit)"
+    ui_kv "Traffic" "$(awk -v r=$((rx - rx_prev)) -v t=$((tx - tx_prev)) \
+      'BEGIN {printf "down %.2f Mbit/s · up %.2f Mbit/s", r * 8 / 2000000, t * 8 / 2000000}')"
+    ui_kv "TCP sockets" "$sockets"
+    if [[ $ct =~ ^[0-9]+$ && $max =~ ^[0-9]+$ && $max -gt 0 ]]; then
+      ui_kv "Conntrack" "${ct} / ${max} ($((ct * 100 / max))%)"
+    else
+      ui_kv "Conntrack" "module not loaded"
+    fi
+    ui_kv "Load" "$(load_avg)"
+    ui_kv "RAM available" "$(awk '/^MemAvailable:/ {printf "%d MB", $2 / 1024; exit}' /proc/meminfo)"
+    rx_prev="$rx"
+    tx_prev="$tx"
+
+    # Non-blocking key check: the sleep above paces the loop.
+    if read -rsn1 -t 0.01 key && [[ ${key,,} == q ]]; then
+      printf '\n'
+      return 0
+    fi
+  done
+}
+
 # tools_report — plain-text support bundle (also behind --report). Printed
 # to stdout AND saved, so users can paste it into an issue/ticket directly.
 tools_report() {
@@ -122,6 +237,10 @@ tools_menu() {
     ui_menu_item 6 "Docker+UFW audit" "check the firewall bypass"
     ui_menu_item 7 "Support report" "full plain-text dump for issues/tickets"
     ui_menu_item 8 "XanMod kernel (BBRv3)" "ADVANCED — replaces the kernel"
+    ui_menu_item 9 "Bandwidth test" "speedtest client or plain HTTP download"
+    ui_menu_item b "Quick benchmark" "CPU and disk, no dependencies"
+    ui_menu_item w "Live view" "conntrack, sockets and traffic under load"
+    ui_menu_item m "APT mirror" "switch to an Iranian mirror (or revert)"
     ui_menu_item 0 "Back"
     ui_hr
     read -rp "Select: " choice || return 0
@@ -156,6 +275,19 @@ tools_menu() {
         ;;
       8)
         kernel_xanmod_install
+        ui_pause
+        ;;
+      9)
+        tools_speedtest || true # outcome already reported
+        ui_pause
+        ;;
+      b | B)
+        tools_benchmark
+        ui_pause
+        ;;
+      w | W) tools_watch || true ;;
+      m | M)
+        mirror_apply || true
         ui_pause
         ;;
       0) return 0 ;;

@@ -19,19 +19,29 @@ menu_dashboard() {
 menu_rollback() {
   ui_logo
   ui_title "Rollback"
-  local run
+  local run choice
   run="$(manifest_latest_run)"
   if [[ -z $run ]]; then
     printf 'No recorded changes yet — nothing to roll back.\n'
     ui_pause
     return 0
   fi
-  printf 'Latest recorded run: %s%s%s\n' "$C_ACCENT" "$run" "$C_RESET"
-  printf 'This restores every file that run modified and removes files it created.\n'
+  printf 'Latest recorded run: %s%s%s · %s change(s) recorded in total\n' \
+    "$C_ACCENT" "$run" "$C_RESET" "$(manifest_entry_count)"
   ui_hr
-  if ui_confirm "Revert all changes from this run?"; then
-    rollback_latest
-  fi
+  ui_menu_item 1 "Undo the last run" "restore files that run changed, remove what it created"
+  ui_menu_item 2 "Restore original state" "everything back to before ServerTools ever ran"
+  ui_menu_item 0 "Back"
+  ui_hr
+  read -rp "Select: " choice || return 0
+  case "${choice:-}" in
+    1) ui_confirm "Revert all changes from run ${run}?" && rollback_latest ;;
+    2)
+      printf '%sThis undoes every ServerTools change on this host.%s\n' "$C_WARN" "$C_RESET"
+      ui_confirm "Restore the original (factory) state?" && rollback_original
+      ;;
+    *) return 0 ;;
+  esac
   ui_pause
 }
 
@@ -78,10 +88,12 @@ main_menu() {
     ui_menu_item 1 "Quick Optimize" "full base layer + auto-detected profile (recommended)"
     ui_menu_item 2 "Custom Optimize" "pick profile and modules manually"
     ui_menu_item 3 "System Status" "full report"
-    ui_menu_item 4 "Rollback" "undo the latest recorded run"
-    ui_menu_item 5 "Security" "UFW / fail2ban / SSH hardening (optional)"
-    ui_menu_item 6 "Network & VPN tools" "ping matrix, MSS clamp, audits"
-    ui_menu_item 7 "Settings" "paths, config, manifest"
+    ui_menu_item 4 "Doctor" "is everything still in effect? (drift check)"
+    ui_menu_item 5 "Rollback" "undo changes"
+    ui_menu_item 6 "Security" "UFW / fail2ban / SSH / anti-abuse (optional)"
+    ui_menu_item 7 "Network & VPN tools" "ping, speed, live view, MSS, mirror"
+    ui_menu_item 8 "Node & Docker" "config backup, installers, container limits"
+    ui_menu_item 9 "Settings" "paths, config, install/update"
     ui_menu_item 0 "Exit"
     ui_hr
     # EOF (e.g. closed stdin) simply exits the menu.
@@ -93,10 +105,15 @@ main_menu() {
       1) quick_optimize ;;
       2) custom_optimize ;;
       3) show_status ;;
-      4) menu_rollback ;;
-      5) security_menu ;;
-      6) tools_menu ;;
-      7) menu_settings ;;
+      4)
+        doctor_run || true # drift is reported on screen, not an error here
+        ui_pause
+        ;;
+      5) menu_rollback ;;
+      6) security_menu ;;
+      7) tools_menu ;;
+      8) node_menu ;;
+      9) menu_settings ;;
       0) return 0 ;;
       *)
         printf '%sInvalid choice.%s\n' "$C_ERR" "$C_RESET"

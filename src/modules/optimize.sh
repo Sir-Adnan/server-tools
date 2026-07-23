@@ -38,12 +38,69 @@ st_run_step() { # st_run_step TITLE FN
     3)
       printf '%sWARN%s\n' "$C_WARN" "$C_RESET"
       ST_STEP_RESULTS+=("warn|${title}")
+      st_escalate_exit 3
       ;;
     *)
       printf '%sFAILED%s\n' "$C_ERR" "$C_RESET"
       ST_STEP_RESULTS+=("fail|${title}")
+      st_escalate_exit 1
       ;;
   esac
+  return 0
+}
+
+# --- Before/after snapshot -------------------------------------------------
+# Kernel counters captured before the first change, so the effect of the
+# tuning can be shown later instead of merely claimed.
+
+readonly ST_SNAPSHOT_FILE="${ST_LIB_DIR}/snapshot.tsv"
+
+_snapshot_counters() {
+  local retrans='0' insegs='0' outsegs='0' drops='0' ct='0'
+  if [[ -r /proc/net/snmp ]]; then
+    # The Tcp: header line names the columns; the next Tcp: line holds values.
+    read -r retrans insegs outsegs < <(awk '
+      /^Tcp:/ { if (!h) { for (i = 1; i <= NF; i++) idx[$i] = i; h = 1; next }
+                print $idx["RetransSegs"], $idx["InSegs"], $idx["OutSegs"]; exit }' /proc/net/snmp)
+  fi
+  if [[ -r /proc/net/dev ]]; then
+    drops="$(awk 'NR > 2 {rx += $5; tx += $12} END {print rx + tx + 0}' /proc/net/dev)"
+  fi
+  ct="$(sysctl_get net.netfilter.nf_conntrack_count)"
+  [[ $ct =~ ^[0-9]+$ ]] || ct=0
+  printf '%s\t%s\t%s\t%s\t%s' "${retrans:-0}" "${insegs:-0}" "${outsegs:-0}" "${drops:-0}" "$ct"
+}
+
+snapshot_save() {
+  local now
+  now="$(_snapshot_counters)" || return 0
+  printf 'taken_at\t%s\n' "$(date '+%F %T')" >"$ST_SNAPSHOT_FILE"
+  printf 'counters\t%s\n' "$now" >>"$ST_SNAPSHOT_FILE"
+  log_debug "baseline snapshot stored"
+}
+
+# snapshot_report — deltas since the baseline; silent when none was taken.
+snapshot_report() {
+  [[ -f $ST_SNAPSHOT_FILE ]] || return 2
+  local taken old new
+  taken="$(awk -F'\t' '$1 == "taken_at" {print $2; exit}' "$ST_SNAPSHOT_FILE")"
+  old="$(awk -F'\t' '$1 == "counters" {print $2 "\t" $3 "\t" $4 "\t" $5 "\t" $6; exit}' "$ST_SNAPSHOT_FILE")"
+  new="$(_snapshot_counters)"
+
+  local o_re o_in o_out o_drop _o_ct n_re n_in n_out n_drop n_ct
+  IFS=$'\t' read -r o_re o_in o_out o_drop _o_ct <<<"$old"
+  IFS=$'\t' read -r n_re n_in n_out n_drop n_ct <<<"$new"
+
+  local d_re=$((n_re - o_re)) d_seg=$((n_in - o_in + n_out - o_out)) d_drop=$((n_drop - o_drop))
+  ui_kv "Baseline taken" "$taken"
+  if ((d_seg > 0)); then
+    # Retransmit rate in per-mille keeps integer math honest on small samples.
+    ui_kv "TCP retransmits" "${d_re} of ${d_seg} segments ($((d_re * 1000 / d_seg))‰ since baseline)"
+  else
+    ui_kv "TCP retransmits" "${d_re} since baseline"
+  fi
+  ui_kv "Interface drops" "${d_drop} since baseline"
+  ui_kv "Conntrack now" "$n_ct"
   return 0
 }
 
@@ -102,11 +159,15 @@ _optimize_run() {
   ST_STEP_RESULTS=()
   ST_STEP_IDX=0
   ST_STEP_TOTAL=$((1 + with_dns + with_swap + with_limits + with_extras))
+  # Baseline first: counters must be read before anything is changed.
+  snapshot_save
   ui_hr
+  # Swap runs BEFORE sysctl on purpose: vm.swappiness depends on whether the
+  # host ends up on compressed RAM (zram) or a disk swap file.
+  ((with_swap)) && st_run_step "Swap" swap_apply
   st_run_step "Kernel network tuning (sysctl, tier ${ST_TIER})" sysctl_apply
   ((with_limits)) && st_run_step "File-descriptor limits (nofile)" limits_apply
   ((with_extras)) && st_run_step "Journald cap & NTP" extras_apply
-  ((with_swap)) && st_run_step "Swap file" swap_apply
   ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
   st_report_summary
   # Show what actually answers queries — a written config proves nothing.
@@ -114,6 +175,7 @@ _optimize_run() {
   _offer_service_restart
   config_set last_profile "$ST_PROFILE"
   config_set last_tier "$ST_TIER"
+  backup_prune 10
   return 0
 }
 

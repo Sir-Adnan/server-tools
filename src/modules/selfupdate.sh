@@ -43,6 +43,10 @@ _self_download() {
   if ((from_release)) && has_cmd sha256sum; then
     local sums expected actual
     sums="$(curl -fsSL --max-time 30 "$ST_URL_RELEASE_SUMS" 2>>"$ST_LOG_FILE")" || sums=''
+    if [[ -z $sums ]]; then
+      log_warn "SHA256SUMS could not be fetched — the release was NOT checksum-verified."
+      printf '%sWarning:%s checksum file unavailable; only syntax checks were run.\n' "$C_WARN" "$C_RESET"
+    fi
     if [[ -n $sums ]]; then
       expected="$(awk '/server-tools\.sh/ {print $1; exit}' <<<"$sums")"
       actual="$(sha256sum "$tmp" | awk '{print $1}')"
@@ -65,7 +69,8 @@ _self_download() {
 st_self_install() {
   local src
   mkdir -p "$(dirname "$ST_INSTALL_PATH")"
-  st_track_file "$ST_INSTALL_PATH"
+  # Deliberately NOT tracked: the installed command is the tool itself, not a
+  # system change — a later rollback must never delete the user's `st`.
   if src="$(_self_source_path)"; then
     cp -f "$src" "$ST_INSTALL_PATH"
   else
@@ -103,7 +108,6 @@ st_self_update() {
     return 0
   fi
 
-  st_track_file "$target"
   mv -f "$staged" "$target"
   chmod 755 "$target"
   printf '%sUpdated:%s v%s -> v%s (%s)\n' "$C_OK" "$C_RESET" "$ST_VERSION" "$new_ver" "$target"

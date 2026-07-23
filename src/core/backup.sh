@@ -35,6 +35,70 @@ st_track_file() {
   fi
 }
 
+# backup_prune [KEEP] — keep the newest KEEP run directories (default 10).
+# The pristine original/ tree is never touched: it is the only way back to
+# the state the server was in before ServerTools ever ran.
+backup_prune() {
+  local keep="${1:-10}" runs="${ST_BACKUP_DIR}/runs" dir
+  [[ -d $runs ]] || return 0
+  while IFS= read -r dir; do
+    [[ -n $dir ]] || continue
+    rm -rf "${runs:?}/${dir}" ||
+      log_warn "Could not prune the old backup ${dir}."
+    log_debug "pruned old run backup: ${dir}"
+  done < <(find "$runs" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' 2>/dev/null |
+    sort -r | awk -v k="$keep" 'NR > k')
+}
+
+# rollback_original — restore every file to the state it had the first time
+# ServerTools touched it, across all runs, and remove everything it created.
+rollback_original() {
+  if [[ ! -d $ST_ORIGINAL_DIR ]]; then
+    log_warn "No pristine backups recorded — nothing to restore."
+    return 0
+  fi
+
+  local file target restored=0 removed=0
+  # Restore first, then remove created files: a file can appear as created in
+  # one run and modified in a later one, and the original must win.
+  while IFS= read -r file; do
+    target="${file#"$ST_ORIGINAL_DIR"}"
+    [[ -n $target ]] || continue
+    mkdir -p "$(dirname "$target")"
+    cp -a "$file" "$target" && restored=$((restored + 1))
+  done < <(find "$ST_ORIGINAL_DIR" -type f -o -type l 2>/dev/null)
+
+  while IFS= read -r target; do
+    [[ -n $target ]] || continue
+    # Only remove what was created and never existed before this tool ran.
+    [[ -e ${ST_ORIGINAL_DIR}${target} ]] && continue
+    if [[ -r /proc/swaps ]] && grep -q "^${target}[[:space:]]" /proc/swaps 2>/dev/null; then
+      swapoff "$target" 2>>"$ST_LOG_FILE" || {
+        log_warn "Cannot swapoff ${target} — left in place."
+        continue
+      }
+    fi
+    rm -f "$target" && removed=$((removed + 1))
+  done < <(awk -F'\t' 'NR > 1 && $3 == "created" {print $4}' "$ST_MANIFEST_FILE" 2>/dev/null | sort -u)
+
+  local unit
+  while IFS= read -r unit; do
+    [[ -n $unit ]] || continue
+    has_cmd systemctl || break
+    systemctl disable --now "$unit" >/dev/null 2>>"$ST_LOG_FILE" ||
+      log_warn "Could not disable unit ${unit}."
+  done < <(awk -F'\t' 'NR > 1 && $3 == "unit" {print $4}' "$ST_MANIFEST_FILE" 2>/dev/null | sort -u)
+
+  has_cmd systemctl && { systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."; }
+  has_cmd sysctl && { sysctl --system >/dev/null 2>>"$ST_LOG_FILE" || log_warn "sysctl reload reported errors."; }
+
+  log_info "Factory restore: ${restored} restored, ${removed} removed."
+  printf '%sRestored to the state before ServerTools ever ran:%s %d file(s) restored, %d removed.\n' \
+    "$C_OK" "$C_RESET" "$restored" "$removed"
+  printf '%sA reboot guarantees every runtime setting is back as well.%s\n' "$C_MUTED" "$C_RESET"
+  return 0
+}
+
 # rollback_latest — revert everything recorded by the most recent run,
 # newest change first. Files "created" by that run are removed; "modified"
 # files are restored from the run backup.

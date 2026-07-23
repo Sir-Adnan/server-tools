@@ -82,6 +82,55 @@ is_valid_ipv4() {
   return 0
 }
 
+# is_valid_ipv6 — hex groups separated by colons, at most one "::"
+# compression, 2..8 groups. Rejects the "anything with a colon" trap.
+is_valid_ipv6() {
+  local ip="$1"
+  [[ $ip == *:* && $ip != *:::* ]] || return 1
+  # At most one "::" compression marker.
+  local rest="${ip//::/}"
+  ((${#ip} - ${#rest} <= 2)) || return 1
+  [[ $ip =~ ^([0-9a-fA-F]{0,4}:){1,7}[0-9a-fA-F]{0,4}$ ]] || return 1
+  # Without compression every one of the 8 groups must be present.
+  if [[ $ip != *::* ]]; then
+    local IFS=':' groups
+    read -ra groups <<<"$ip"
+    ((${#groups[@]} == 8)) || return 1
+  fi
+  return 0
+}
+
+# qdisc_supported NAME — real probe: attach the qdisc to loopback and remove
+# it again (loopback traffic is unaffected, the default is restored at once).
+# Dry-run must not touch anything, so it falls back to module inspection.
+qdisc_supported() {
+  local name="$1"
+  has_cmd tc || return 1
+  if ((ST_DRY_RUN)); then
+    # fq/fq_codel are built into every supported kernel; others ship as
+    # modules, which modinfo can check without loading them.
+    case "$name" in
+      fq | fq_codel) return 0 ;;
+      *) has_cmd modinfo && modinfo -n "sch_${name}" >/dev/null 2>&1 ;;
+    esac
+    return
+  fi
+  tc qdisc add dev lo root "$name" 2>/dev/null || return 1
+  tc qdisc del dev lo root 2>/dev/null ||
+    log_warn "Could not detach the probe qdisc from loopback."
+  return 0
+}
+
+# net_dns_capable_links — links worth carrying a DNS override: everything
+# that is up, minus loopback and container/virtual bridges.
+net_dns_capable_links() {
+  has_cmd ip || return 0
+  ip -o link show up 2>/dev/null |
+    awk -F': ' '{print $2}' |
+    sed 's/@.*//' |
+    grep -vE '^(lo|docker[0-9]*|br-|veth|cni|virbr|kube)' || true
+}
+
 net_default_iface() {
   has_cmd ip || return 0
   ip route show default 2>/dev/null |

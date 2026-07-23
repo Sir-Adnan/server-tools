@@ -14,7 +14,37 @@ readonly -a ST_MSS_RULE=(
   FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
 )
 
+# _vpn_mss_ufw_persist — add the clamp to UFW's before.rules so `ufw reload`
+# keeps it. The file is tracked first and restored if UFW refuses to reload.
+_vpn_mss_ufw_persist() {
+  local rules='/etc/ufw/before.rules'
+  has_cmd ufw || return 2
+  [[ -f $rules ]] || return 2
+  grep -q 'server-tools MSS' "$rules" 2>/dev/null && return 0 # idempotent
+
+  st_track_file "$rules"
+  cat >>"$rules" <<'EOF'
+
+# --- server-tools MSS clamping (managed block, safe to remove as a whole)
+*mangle
+:FORWARD - [0:0]
+-A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+COMMIT
+EOF
+
+  if ufw status 2>/dev/null | grep -q '^Status: active'; then
+    if ! ufw reload >/dev/null 2>>"$ST_LOG_FILE"; then
+      cp -a "${ST_RUN_BACKUP_DIR}${rules}" "$rules"
+      log_warn "UFW rejected the before.rules change — reverted; the clamp survives only until the next ufw reload."
+      return 3
+    fi
+  fi
+  log_info "MSS clamp persisted in ${rules}."
+  return 0
+}
+
 vpn_mss_clamp() {
+  local rc_ufw=0
   ui_section "MSS clamping (TCP over tunnels/NAT)"
   printf 'Clamps TCP MSS to the path MTU on forwarded traffic. Fixes the classic\n'
   printf '"VPN connects but sites do not load" symptom (WireGuard, tunnels, NAT).\n'
@@ -34,6 +64,11 @@ vpn_mss_clamp() {
     ip6tables -t mangle -A "${ST_MSS_RULE[@]}" 2>>"$ST_LOG_FILE" ||
       log_warn "IPv6 MSS rule failed (IPv6 clamping skipped)."
   fi
+
+  # UFW rebuilds the whole ruleset on `ufw reload` and at boot, wiping rules
+  # added with plain iptables. When UFW owns the firewall, the clamp belongs
+  # in before.rules so it is restored with everything else.
+  _vpn_mss_ufw_persist || rc_ufw=$?
 
   if [[ -d /etc/systemd/system ]] && has_cmd systemctl; then
     local ipt ip6t
@@ -58,9 +93,23 @@ vpn_mss_clamp() {
     log_warn "No systemd — the MSS rule is active now but will not survive a reboot."
   fi
 
-  printf '%sMSS clamping active%s (persisted via oneshot unit — nothing stays running).\n' \
-    "$C_OK" "$C_RESET"
-  log_info "MSS clamping applied."
+  if ((rc_ufw == 0)); then
+    printf '%sMSS clamping active%s (persisted for reboots and for "ufw reload").\n' \
+      "$C_OK" "$C_RESET"
+  else
+    printf '%sMSS clamping active%s (persisted via oneshot unit — nothing stays running).\n' \
+      "$C_OK" "$C_RESET"
+  fi
+  log_info "MSS clamping applied (ufw persistence rc=${rc_ufw})."
+}
+
+# mss_verify — 0 when the clamp rule is present in the live mangle table.
+mss_verify() {
+  has_cmd iptables || return 2
+  iptables -t mangle -C "${ST_MSS_RULE[@]}" 2>/dev/null && return 0
+  # Only report drift when we were actually asked to set it up.
+  [[ -f $ST_MSS_UNIT ]] && return 3
+  return 2
 }
 
 vpn_docker_ufw_audit() {

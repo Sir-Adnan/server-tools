@@ -4,6 +4,87 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] — 2026-07-23
+
+### Fixed — critical
+
+- **IPv6 died after a reboot on RA/SLAAC providers.** Enabling
+  `ipv6.conf.all.forwarding` makes the kernel ignore router advertisements,
+  which removes the IPv6 default route on the next boot. `accept_ra = 2` is
+  now written for `all`, `default` and — because the setting is per-device —
+  the live default interface by name.
+- **SSH hardening could silently not apply.** sshd honours the FIRST value
+  it reads and processes `sshd_config.d` in lexical order, so the old
+  `99-server-tools.conf` lost against `50-cloud-init.conf`. The drop-in is
+  now `00-server-tools.conf`, the superseded file is removed, and every
+  setting is verified against `sshd -T` instead of being assumed.
+
+### Fixed — high
+
+- `--auto` always exited 0. There is now a documented exit-code contract
+  (0 success, 1 failure, 2 usage error, 3 warnings/drift) that propagates
+  from every step, which makes the tool usable in Ansible and CI.
+- UDP conntrack timeouts are tuned for QUIC/Hysteria2 nodes
+  (`udp_timeout`, `udp_timeout_stream`, plus TCP time-wait/close-wait and
+  generic timeouts); WireGuard keeps longer-lived mappings on purpose.
+- Reserved service ports are no longer capped at 32 individual entries:
+  consecutive ports collapse into ranges, the cap is 64 entries, extra
+  ports can be pinned with the `reserved_ports` config key, and `--verify`
+  reports listeners that appeared later.
+- `vm.swappiness` follows the swap backend: 100 on zram (compressed RAM
+  should be used), 10 on a disk swap file. The swap step therefore runs
+  before the sysctl step.
+- `--profile/--tier/--users/--dns` without `--auto`/`--dry-run` used to be
+  ignored silently; they now exit 2 with an explanation.
+- `tcp_fastopen` drops to client-only (1) on VPN profiles: server-side TFO
+  adds a fingerprint and some middleboxes drop SYNs carrying data.
+
+### Fixed — medium
+
+- `FallbackDNS` is reset to empty instead of carrying a dead value — this
+  also removes the distribution's Google/Cloudflare fallbacks, which could
+  silently answer queries the chosen resolver refused.
+- Per-link DNS overrides now cover every up link, not just the default
+  route; the boot unit resolves interfaces at runtime and pulls in
+  `network-online.target` with `Wants=`.
+- MSS clamping survives `ufw reload` (persisted in `before.rules`, reverted
+  automatically if UFW rejects the change).
+- Old run backups are pruned (newest 10 kept); `original/` is never touched.
+- `--install`/`--update` no longer record `/usr/local/bin/st` in the
+  manifest, so a later rollback cannot delete the command itself.
+- A missing `SHA256SUMS` during self-update is reported instead of silently
+  skipping verification.
+- `--dry-run` no longer runs `modprobe`; qdisc support is inspected with
+  `modinfo` in that mode.
+- IPv6 addresses are validated properly (groups, single `::`) instead of
+  accepting anything containing a colon.
+- Docker containers inherit limits from the engine: the tool now offers to
+  write `default-ulimits` when `/etc/docker/daemon.json` does not exist and
+  prints the exact snippet when it does.
+
+### Added
+
+- **`--verify` / Doctor menu** — drift detection across every module
+  (`<module>_verify()` is now a formal contract), unreserved-port check,
+  and measured effect since the baseline. `--json` makes it fleet-friendly.
+- **Before/after snapshot** — TCP retransmits, interface drops and conntrack
+  are captured before the first change so the effect can be measured later.
+- **`--rollback-original`** — restore the state from before ServerTools ever
+  ran, in one step (menu: Rollback → Restore original state).
+- **Anti-abuse egress profile** — blocks outbound SMTP/worm ports and
+  RFC1918/CGNAT ranges while keeping the provider's own subnet reachable,
+  and switches SSH to a rate-limited rule.
+- **Node API restriction** — 62050/62051 limited to the panel IP.
+- **Node & Docker menu** — configuration backup (certificates included),
+  official upstream installers shown in full before running, Docker ulimits.
+- **Network tools** — bandwidth test (speedtest client or dependency-free
+  HTTP download), quick CPU/disk benchmark, live view of
+  conntrack/sockets/traffic, and APT mirror switching for Iran-hosted
+  servers with automatic rollback when `apt-get update` fails.
+- **Real qdisc probing** — support is tested by attaching the qdisc to
+  loopback instead of being assumed; `cake` and any other qdisc can be
+  selected with the `qdisc` config key.
+
 ## [2.0.1] — 2026-07-23
 
 ### Fixed

@@ -35,6 +35,23 @@ readonly ST_RUN_BACKUP_DIR="${ST_BACKUP_DIR}/runs/${ST_RUN_ID}"
 ST_OPT_DEBUG=0
 ST_OPT_NO_COLOR=0
 ST_OPT_BATCH=0
+ST_OPT_JSON=0
+ST_DRY_RUN=0
+
+# Exit-code contract (documented in --help and docs/ARCHITECTURE.md):
+#   0  every step succeeded (or was legitimately skipped)
+#   1  at least one step FAILED
+#   2  usage error (bad CLI arguments)
+#   3  everything applied but at least one step reported a WARNING
+# ST_EXIT_CODE only ever escalates: warn (3) never overwrites fail (1).
+ST_EXIT_CODE=0
+
+st_escalate_exit() { # st_escalate_exit CODE
+  case "$1" in
+    1) ST_EXIT_CODE=1 ;;
+    3) ((ST_EXIT_CODE == 1)) || ST_EXIT_CODE=3 ;;
+  esac
+}
 
 on_unhandled_error() {
   local exit_code="$1" line="$2" command="$3"
