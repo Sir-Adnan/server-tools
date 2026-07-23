@@ -77,6 +77,10 @@ tools_report() {
     printf 'Detected: %s\n' "$(detect_summary)"
     printf 'Saved profile/tier: %s / %s\n\n' \
       "$(config_get last_profile none)" "$(config_get last_tier -)"
+    printf -- '--- DNS\n'
+    printf 'Resolver stack: %s\n' "$(dns_stack)"
+    printf 'Servers in effect: %s\n' "$(dns_effective_servers)"
+    printf 'DNS over TLS: %s\n\n' "$(dns_over_tls_state)"
     printf -- '--- Kernel tuning (live)\n'
     local key
     for key in net.ipv4.tcp_congestion_control net.core.default_qdisc \
@@ -85,7 +89,8 @@ tools_report() {
       net.netfilter.nf_conntrack_count fs.file-max vm.swappiness; do
       printf '%s = %s\n' "$key" "$(sysctl_get "$key")"
     done
-    printf '\n'
+    printf 'nofile soft/hard: %s / %s\n\n' \
+      "$(ulimit -Sn 2>/dev/null || printf '?')" "$(ulimit -Hn 2>/dev/null || printf '?')"
     printf -- '--- Swap\n'
     if [[ -r /proc/swaps ]]; then cat /proc/swaps; else printf 'unavailable\n'; fi
     printf '\n'

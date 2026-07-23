@@ -109,6 +109,8 @@ _optimize_run() {
   ((with_swap)) && st_run_step "Swap file" swap_apply
   ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
   st_report_summary
+  # Show what actually answers queries — a written config proves nothing.
+  ((with_dns)) && ui_kv "DNS in effect" "$(dns_effective_servers)"
   _offer_service_restart
   config_set last_profile "$ST_PROFILE"
   config_set last_tier "$ST_TIER"
@@ -121,31 +123,43 @@ _optimize_run() {
 _offer_service_restart() {
   ((ST_LIMITS_CHANGED)) || return 0
 
-  local containers=''
-  if has_cmd docker; then
-    # grep exit 1 (no match) is a normal outcome here, not an error.
-    containers="$(docker ps --format '{{.Names}}' 2>/dev/null |
-      grep -iE 'marzban|pg[-_]?node|pasarguard|x-?ui|xray|hiddify|sing-?box|hysteria|wg' || true)"
+  # Match on name AND image: a pg-node container is often just called "node"
+  # while only its image identifies it (same source as detect_stack).
+  # grep exit 1 (no match) is a normal outcome here, not an error.
+  local containers='' engine
+  for engine in docker podman; do
+    has_cmd "$engine" || continue
+    containers+="$("$engine" ps --format '{{.Names}} {{.Image}}' 2>/dev/null |
+      grep -iE 'marzban|pg[-_]?node|pasarguard|gozargah|x-?ui|xray|hiddify|sing-?box|hysteria|wireguard|wg-' |
+      awk -v e="$engine" '{print e "\t" $1}' || true)"
+  done
+
+  if [[ -n $containers ]]; then
+    printf '%sNote:%s containers inherit their file limit from the container engine,\n' "$C_MUTED" "$C_RESET"
+    printf 'not from /etc/security/limits.d — set "default-ulimits" in\n'
+    printf '/etc/docker/daemon.json if a node still reports a low nofile.\n'
+    printf '%sA restart briefly disconnects the users served by that node.%s\n' "$C_WARN" "$C_RESET"
   fi
 
   if ((ST_OPT_BATCH)); then
     if [[ -n $containers ]]; then
-      printf '%sNote:%s restart these containers so they pick up the new nofile limit:\n  %s\n' \
-        "$C_WARN" "$C_RESET" "$(tr '\n' ' ' <<<"$containers")"
+      printf '%sNote:%s restart these containers so they pick up the new limits:\n  %s\n' \
+        "$C_WARN" "$C_RESET" "$(awk '{printf "%s ", $2}' <<<"$containers")"
     fi
     return 0
   fi
 
-  local name
-  for name in $containers; do # global IFS splits on newlines — one name per entry
-    if ui_confirm "Restart container '${name}' now so it picks up the new limits?"; then
-      if docker restart "$name" >/dev/null 2>>"$ST_LOG_FILE"; then
+  local engine_name name
+  while IFS=$'\t' read -r engine_name name; do
+    [[ -n $name ]] || continue
+    if ui_confirm "Restart ${engine_name} container '${name}' now so it picks up the new limits?"; then
+      if "$engine_name" restart "$name" >/dev/null 2>>"$ST_LOG_FILE"; then
         printf '%sRestarted:%s %s\n' "$C_OK" "$C_RESET" "$name"
       else
         log_warn "Could not restart ${name}."
       fi
     fi
-  done
+  done <<<"$containers"
 
   local svc
   for svc in xray x-ui sing-box hysteria-server; do

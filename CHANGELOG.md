@@ -4,6 +4,43 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.0.1] — 2026-07-23
+
+### Fixed
+
+- **DNS was reported as applied while the old servers stayed in effect.**
+  Two root causes, both fixed: systemd *appends* to list settings in
+  drop-ins, so the previously configured servers stayed ahead of ours (the
+  drop-in now resets `DNS=`/`FallbackDNS=` before assigning them), and
+  per-link DNS from netplan/DHCP takes precedence over the global
+  configuration, so it is now overridden at runtime and persisted — by
+  clearing the link's DNS in a systemd-networkd drop-in where the link is
+  networkd-managed, otherwise through a oneshot unit.
+- DNS application is verified against the servers that will really answer
+  queries (link scope, then global, then resolv.conf) instead of only
+  checking that the resolved stub is in place; a mismatch now reports WARN.
+- `/etc/resolv.conf` that bypasses systemd-resolved is detected and gets the
+  servers written into it directly as well.
+- Tracking the same file twice in one run overwrote its run backup with the
+  already-modified content, which would have made rollback restore our own
+  file instead of the original.
+- The post-limits restart offer missed containers whose name does not carry
+  the product (a pg-node container is often just `node`); it now matches on
+  name and image, covers podman, and warns that a restart disconnects users.
+
+### Added
+
+- System Status is now a full report: hostname/arch/timezone and NTP sync,
+  swap backend (zram vs file), interface MTU and active qdisc, TCP socket
+  counts, a dedicated DNS section (resolver stack, servers in effect, DoT
+  state, resolv.conf mode), accept-queue and buffer values, conntrack usage
+  with percentage, nofile limits (shell, systemd, docker advisory),
+  firewall/fail2ban/SSH state, and the applied profile/tier/user count.
+- `Electro` and `Begzar` are now selectable with `--dns` too.
+- Support reports (`--report`) include the DNS section and nofile limits.
+- The DNS menu shows the servers currently in effect, and after applying,
+  the optimizer prints the servers that actually answer queries.
+
 ## [2.0.0] — 2026-07-19
 
 First stable release of the full rewrite ("ServerTools v2").

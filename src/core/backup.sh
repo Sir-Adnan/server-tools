@@ -10,8 +10,15 @@
 #   - a manifest row ("modified" or "created") for rollback.
 # ============================================================================
 
+# Paths already captured in this run. Tracking the same file twice would
+# overwrite its run backup with our own edit and silently break rollback.
+declare -A ST_TRACKED=()
+
 st_track_file() {
   local path="$1"
+  [[ -n ${ST_TRACKED[$path]:-} ]] && return 0
+  ST_TRACKED[$path]=1
+
   mkdir -p "$ST_RUN_BACKUP_DIR"
   if [[ -e $path || -L $path ]]; then
     if [[ ! -e ${ST_ORIGINAL_DIR}${path} && ! -L ${ST_ORIGINAL_DIR}${path} ]]; then

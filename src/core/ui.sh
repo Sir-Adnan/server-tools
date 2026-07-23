@@ -54,7 +54,7 @@ ui_section() {
 
 # ui_kv KEY VALUE — colored label, plain value.
 ui_kv() {
-  printf '  %s%-18s%s %s\n' "$C_KEY" "$1:" "$C_RESET" "$2"
+  printf '  %s%-21s%s %s\n' "$C_KEY" "$1:" "$C_RESET" "$2"
 }
 
 # ui_menu_item KEY LABEL [HINT]

@@ -1,12 +1,22 @@
 # shellcheck shell=bash
 # ============================================================================
-# modules/dns.sh — DNS provider selection and safe application.
+# modules/dns.sh — DNS provider selection and application that actually sticks.
 #
 # Selection and application are deliberately decoupled: "Keep current DNS"
-# really keeps it (the legacy v1 bug silently applied the default provider).
-# No Domains=~. hijack; systemd-resolved gets a drop-in, plain systems get
-# a tracked /etc/resolv.conf rewrite.
+# really keeps it. Applying is harder than writing one file:
+#
+#   * systemd list settings ACCUMULATE across drop-ins — without an empty
+#     reset assignment the previously configured servers stay ahead of ours;
+#   * per-link DNS (netplan / DHCP) takes PRECEDENCE over the global resolved
+#     configuration, so it must be overridden now and persisted for reboots;
+#   * /etc/resolv.conf may bypass systemd-resolved entirely.
+#
+# Every path therefore ends in a verification of what will really answer
+# queries — a written config file alone is never reported as success.
 # ============================================================================
+
+readonly ST_RESOLVED_DROPIN='/etc/systemd/resolved.conf.d/99-server-tools.conf'
+readonly ST_DNS_UNIT='/etc/systemd/system/server-tools-dns.service'
 
 ST_DNS1=''
 ST_DNS2=''
@@ -28,6 +38,70 @@ readonly -a ST_DNS_PROVIDERS=(
 is_valid_ip() {
   is_valid_ipv4 "$1" || [[ $1 == *:* && $1 != *' '* && -n $1 ]]
 }
+
+# --- Inspection -----------------------------------------------------------
+
+# dns_stack — which resolver actually owns /etc/resolv.conf on this host.
+dns_stack() {
+  if has_cmd systemctl && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    printf 'resolved'
+  elif has_cmd resolvconf && [[ -d /etc/resolvconf/resolv.conf.d ]]; then
+    printf 'resolvconf'
+  else
+    printf 'plain'
+  fi
+}
+
+# _dns_link_servers IFACE — servers configured on that link ("" when none).
+_dns_link_servers() {
+  has_cmd resolvectl || return 0
+  resolvectl dns "$1" 2>/dev/null |
+    sed -e 's/^Link [0-9]* ([^)]*)://' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
+}
+
+# _dns_global_servers — servers in the resolved global scope ("" when none).
+_dns_global_servers() {
+  has_cmd resolvectl || return 0
+  resolvectl status 2>/dev/null |
+    awk '/^ *DNS Servers:/ {sub(/^ *DNS Servers: */, ""); print; exit}'
+}
+
+# dns_effective_servers — what will really answer queries: link scope first
+# (it wins over global), then global, then plain resolv.conf.
+dns_effective_servers() {
+  local iface link
+  if has_cmd resolvectl; then
+    iface="$(net_default_iface)" || iface=''
+    if [[ -n $iface ]]; then
+      link="$(_dns_link_servers "$iface")"
+      if [[ -n $link ]]; then
+        printf '%s' "$link"
+        return 0
+      fi
+    fi
+    link="$(_dns_global_servers)"
+    if [[ -n $link ]]; then
+      printf '%s' "$link"
+      return 0
+    fi
+  fi
+  awk '/^[[:space:]]*nameserver/ {printf "%s ", $2}' /etc/resolv.conf 2>/dev/null |
+    sed 's/[[:space:]]*$//'
+}
+
+# dns_over_tls_state — current DNSOverTLS mode, "n/a" without resolved.
+dns_over_tls_state() {
+  has_cmd resolvectl || {
+    printf 'n/a'
+    return 0
+  }
+  local mode
+  mode="$(resolvectl status 2>/dev/null |
+    awk 'match($0, /DNSOverTLS=[a-z-]+/) {print substr($0, RSTART + 11, RLENGTH - 11); exit}')" || mode=''
+  printf '%s' "${mode:-n/a}"
+}
+
+# --- Latency test ---------------------------------------------------------
 
 # _dns_probe_ms IP — a real DNS query time when dig exists (resolvers often
 # deprioritize ICMP, so ping understates real performance); ping fallback.
@@ -60,12 +134,15 @@ dns_latency_test() {
   done
 }
 
+# --- Selection ------------------------------------------------------------
+
 # dns_select_menu — sets ST_DNS1/ST_DNS2 and returns 0 when the user picked
 # a provider to apply; returns 1 for "keep current" (caller MUST skip apply).
 dns_select_menu() {
   local choice entry name ip1 ip2 i
   while true; do
-    printf '\n%s[DNS provider]%s\n' "$C_TITLE" "$C_RESET"
+    printf '\n%s[DNS provider]%s  current: %s\n' \
+      "$C_TITLE" "$C_RESET" "$(dns_effective_servers)"
     i=1
     for entry in "${ST_DNS_PROVIDERS[@]}"; do
       IFS='|' read -r name ip1 ip2 <<<"$entry"
@@ -98,7 +175,7 @@ dns_select_menu() {
 }
 
 # dns_resolve_cli VALUE — non-interactive parsing for --dns: a provider name
-# (cloudflare|google|quad9|opendns|shecan) or "primary,secondary" addresses.
+# or "primary,secondary" addresses.
 dns_resolve_cli() {
   local value="$1"
   case "${value,,}" in
@@ -122,6 +199,14 @@ dns_resolve_cli() {
       ST_DNS1='178.22.122.100'
       ST_DNS2='185.51.200.2'
       ;;
+    electro)
+      ST_DNS1='78.157.42.100'
+      ST_DNS2='78.157.42.101'
+      ;;
+    begzar)
+      ST_DNS1='185.55.226.26'
+      ST_DNS2='185.55.225.25'
+      ;;
     *,*)
       ST_DNS1="${value%%,*}"
       ST_DNS2="${value#*,}"
@@ -131,50 +216,196 @@ dns_resolve_cli() {
   esac
 }
 
-dns_apply() {
-  [[ -n $ST_DNS1 && -n $ST_DNS2 ]] || return 2 # nothing selected — skip
+# --- Application ----------------------------------------------------------
 
-  if has_cmd systemctl && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    local dropin='/etc/systemd/resolved.conf.d/99-server-tools.conf'
+# _dns_persist_link IFACE — a runtime `resolvectl dns` override is lost on
+# reboot and on DHCP renewal. Preferred fix: clear the link's own DNS in a
+# systemd-networkd drop-in so the global configuration governs it (addressing
+# is untouched). Fallback for NetworkManager/unmanaged links: a oneshot unit
+# that re-applies the override at boot and exits.
+_dns_persist_link() {
+  local iface="$1" netfile='' dropin
+  if has_cmd networkctl; then
+    netfile="$(SYSTEMD_COLORS=0 networkctl status --no-pager "$iface" 2>/dev/null |
+      awk '/Network File:/ {print $NF; exit}')" || netfile=''
+  fi
+
+  if [[ $netfile == /*.network ]]; then
+    dropin="/etc/systemd/network/$(basename "$netfile").d/99-server-tools.conf"
     st_track_file "$dropin"
     mkdir -p "$(dirname "$dropin")"
     cat >"$dropin" <<EOF
 # Generated by ${ST_NAME} v${ST_VERSION}
-[Resolve]
-DNS=${ST_DNS1} ${ST_DNS2}
-FallbackDNS=${ST_DNS2}
-# Encrypt DNS when the resolver supports it, fall back to plain otherwise.
-DNSOverTLS=opportunistic
+# Drop the link-level DNS coming from netplan/DHCP so the global
+# systemd-resolved configuration is the single source of truth.
+# Addressing and routing are deliberately untouched.
+[Network]
+DNS=
+[DHCPv4]
+UseDNS=false
+[DHCPv6]
+UseDNS=false
 EOF
-    if ! systemctl restart systemd-resolved 2>>"$ST_LOG_FILE"; then
-      log_warn "systemd-resolved restart failed — drop-in written but not active yet."
-      return 3
-    fi
-    # Apps read /etc/resolv.conf directly; if it does not point at the
-    # resolved stub, the drop-in silently changes nothing for them.
-    if ! grep -q '127.0.0.53' /etc/resolv.conf 2>/dev/null; then
-      log_warn "resolv.conf does not use the systemd-resolved stub (127.0.0.53) — some apps may bypass the new DNS."
-      return 3
-    fi
-  else
-    st_track_file /etc/resolv.conf
-    if has_cmd chattr; then
-      # Some providers lock resolv.conf with +i; unlock before writing.
-      chattr -i /etc/resolv.conf 2>/dev/null || true
-    fi
-    rm -f /etc/resolv.conf
-    cat >/etc/resolv.conf <<EOF
+    log_info "Link DNS persistence: networkd drop-in ${dropin}."
+    return 0
+  fi
+
+  if [[ ! -d /etc/systemd/system ]] || ! has_cmd systemctl || ! has_cmd resolvectl; then
+    log_warn "No way to persist the link DNS override — it is active now but resets on reboot."
+    return 3
+  fi
+
+  st_track_file "$ST_DNS_UNIT"
+  cat >"$ST_DNS_UNIT" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[Unit]
+Description=ServerTools per-link DNS override (oneshot, exits after boot)
+After=systemd-resolved.service network-online.target
+Wants=systemd-resolved.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$(command -v resolvectl) dns ${iface} ${ST_DNS1} ${ST_DNS2}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
+  if systemctl enable server-tools-dns.service >/dev/null 2>>"$ST_LOG_FILE"; then
+    manifest_add unit server-tools-dns.service
+    log_info "Link DNS persistence: oneshot unit server-tools-dns.service."
+    return 0
+  fi
+  log_warn "Could not enable the DNS persistence unit — override resets on reboot."
+  return 3
+}
+
+# _dns_override_link — per-link DNS beats the global config, so it has to go.
+_dns_override_link() {
+  has_cmd resolvectl || return 0
+  local iface current
+  iface="$(net_default_iface)" || iface=''
+  [[ -n $iface ]] || return 0
+
+  current="$(_dns_link_servers "$iface")"
+  # No link-level servers: the global scope already governs this link.
+  [[ -n $current ]] || return 0
+  [[ $current == "${ST_DNS1} ${ST_DNS2}" ]] && return 0
+
+  log_info "Link ${iface} carries its own DNS (${current}) — overriding it."
+  if ! resolvectl dns "$iface" "$ST_DNS1" "$ST_DNS2" 2>>"$ST_LOG_FILE"; then
+    log_warn "Could not override the link DNS on ${iface}; the global configuration stays shadowed."
+    return 3
+  fi
+  _dns_persist_link "$iface"
+}
+
+# _dns_resolv_conf_visible — do applications reading /etc/resolv.conf end up
+# at our servers? True via the resolved stub, or by listing them directly.
+_dns_resolv_conf_visible() {
+  grep -qE '^[[:space:]]*nameserver[[:space:]]+127\.0\.0\.5[34]' /etc/resolv.conf 2>/dev/null ||
+    grep -qF "$ST_DNS1" /etc/resolv.conf 2>/dev/null
+}
+
+_dns_write_resolv_conf() {
+  st_track_file /etc/resolv.conf
+  if has_cmd chattr; then
+    # Some providers lock resolv.conf with +i; unlocking may legitimately
+    # fail when the attribute is not set — the write below is the real test.
+    chattr -i /etc/resolv.conf 2>/dev/null || true
+  fi
+  rm -f /etc/resolv.conf
+  cat >/etc/resolv.conf <<EOF
 # Generated by ${ST_NAME} v${ST_VERSION}
 nameserver ${ST_DNS1}
 nameserver ${ST_DNS2}
 # Fast failover: 2s per try, alternate between the two servers.
 options timeout:2 attempts:2 rotate
 EOF
-    log_info "resolv.conf written directly (no systemd-resolved); note that a DHCP client may overwrite it."
+}
+
+_dns_apply_resolved() {
+  local rc=0
+  st_track_file "$ST_RESOLVED_DROPIN"
+  mkdir -p "$(dirname "$ST_RESOLVED_DROPIN")"
+  cat >"$ST_RESOLVED_DROPIN" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+[Resolve]
+# The empty assignments RESET the lists inherited from resolved.conf and
+# earlier drop-ins — systemd appends to list settings, so without them the
+# previously configured servers would stay ahead of ours.
+DNS=
+DNS=${ST_DNS1} ${ST_DNS2}
+FallbackDNS=
+FallbackDNS=${ST_DNS2}
+# Encrypt DNS when the resolver supports it, fall back to plain otherwise.
+DNSOverTLS=opportunistic
+EOF
+
+  if ! systemctl restart systemd-resolved 2>>"$ST_LOG_FILE"; then
+    log_warn "systemd-resolved restart failed — drop-in written but not active yet."
+    return 3
+  fi
+
+  # Must run AFTER the restart: restarting resolved discards runtime
+  # per-link overrides and reloads them from networkd/DHCP.
+  _dns_override_link || rc=$?
+
+  if ! _dns_resolv_conf_visible; then
+    log_info "/etc/resolv.conf bypasses systemd-resolved — writing the servers into it directly as well."
+    _dns_write_resolv_conf
+  fi
+  return "$rc"
+}
+
+_dns_apply_resolvconf() {
+  local head='/etc/resolvconf/resolv.conf.d/head'
+  st_track_file "$head"
+  cat >"$head" <<EOF
+# Generated by ${ST_NAME} v${ST_VERSION}
+nameserver ${ST_DNS1}
+nameserver ${ST_DNS2}
+options timeout:2 attempts:2 rotate
+EOF
+  if resolvconf -u 2>>"$ST_LOG_FILE"; then
+    return 0
+  fi
+  log_warn "resolvconf -u failed — writing /etc/resolv.conf directly instead."
+  _dns_write_resolv_conf
+  return 3
+}
+
+_dns_apply_plain() {
+  _dns_write_resolv_conf
+  if has_cmd systemctl && systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    log_warn "NetworkManager is active and may rewrite /etc/resolv.conf on the next connection change."
+  fi
+  return 0
+}
+
+dns_apply() {
+  [[ -n $ST_DNS1 && -n $ST_DNS2 ]] || return 2 # nothing selected — skip
+
+  local stack rc=0
+  stack="$(dns_stack)"
+  case "$stack" in
+    resolved) _dns_apply_resolved || rc=$? ;;
+    resolvconf) _dns_apply_resolvconf || rc=$? ;;
+    *) _dns_apply_plain || rc=$? ;;
+  esac
+  ((rc == 1)) && return 1 # hard failure — do not claim anything was applied
+
+  # Config files mean nothing on their own: verify what answers queries now.
+  local effective
+  effective="$(dns_effective_servers)"
+  if [[ $effective != *"$ST_DNS1"* ]]; then
+    log_warn "DNS verification failed: '${effective:-none}' is in effect, expected ${ST_DNS1} (stack: ${stack})."
+    rc=3
   fi
 
   config_set dns_primary "$ST_DNS1"
   config_set dns_secondary "$ST_DNS2"
-  log_info "DNS applied: ${ST_DNS1} / ${ST_DNS2}"
-  return 0
+  log_info "DNS applied via ${stack}: ${ST_DNS1} / ${ST_DNS2} (in effect: ${effective:-unknown})"
+  return "$rc"
 }
