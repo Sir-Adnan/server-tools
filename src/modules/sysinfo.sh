@@ -94,12 +94,13 @@ _status_memory() {
 
 _status_network() {
   ui_section "Network"
-  local iface mtu qdisc
+  local iface mtu qdisc tc_out
   iface="$(net_default_iface)" || iface=''
   ui_kv "Default IF" "${iface:-unknown}"
   if [[ -n $iface ]]; then
     mtu="$(cat "/sys/class/net/${iface}/mtu" 2>/dev/null)" || mtu='?'
-    qdisc="$(tc qdisc show dev "$iface" 2>/dev/null | awk 'NR == 1 {print $2}')" || qdisc=''
+    tc_out="$(tc qdisc show dev "$iface" 2>/dev/null)" || tc_out=''
+    qdisc="$(awk 'NR == 1 {print $2}' <<<"$tc_out")"
     ui_kv "MTU / qdisc" "${mtu} / ${qdisc:-unknown}"
   fi
   ui_kv "Gateway" "$(net_default_gw || printf 'unknown')"
@@ -176,7 +177,9 @@ _status_limits() {
 _status_security() {
   ui_section "Security"
   if has_cmd ufw; then
-    ui_kv "Firewall (UFW)" "$(ufw status 2>/dev/null | awk 'NR == 1 {print $2; exit}' || printf 'unknown')"
+    local ufw_out=''
+    ufw_out="$(ufw status 2>/dev/null)" || ufw_out=''
+    ui_kv "Firewall (UFW)" "$(awk 'NR == 1 {print $2; exit}' <<<"$ufw_out" || printf 'unknown')"
   else
     ui_kv "Firewall (UFW)" "not installed"
   fi

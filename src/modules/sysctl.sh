@@ -215,29 +215,70 @@ EOF
 net.ipv6.conf.all.accept_ra = 2
 net.ipv6.conf.default.accept_ra = 2
 EOF
-    [[ -n $iface ]] && printf 'net.ipv6.conf.%s.accept_ra = 2\n' "$iface"
+    # The leading "-" tells systemd-sysctl to ignore this line when the
+    # interface does not exist yet at early boot, instead of logging a error.
+    [[ -n $iface ]] && printf -- '-net.ipv6.conf.%s.accept_ra = 2\n' "$iface"
   fi
 }
 
-# sysctl_verify — compare the live kernel against the intent of this profile.
-# Returns 0 when everything matches, 3 on drift. Used by apply and doctor.
+# _ports_expand LIST — "80,1000-1002" -> a sorted, space separated port set.
+# The kernel normalises ip_local_reserved_ports (it stores a bitmap and
+# prints merged ranges), so that key can only be compared as a set.
+_ports_expand() {
+  local item low high
+  {
+    for item in ${1//,/ }; do
+      if [[ $item == *-* ]]; then
+        low="${item%%-*}"
+        high="${item##*-}"
+        [[ $low =~ ^[0-9]+$ && $high =~ ^[0-9]+$ ]] || continue
+        while ((low <= high)); do
+          printf '%s\n' "$low"
+          low=$((low + 1))
+        done
+      elif [[ $item =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "$item"
+      fi
+    done
+  } | sort -un | paste -sd' ' -
+}
+
+# _sysctl_values_match KEY ACTUAL EXPECTED
+_sysctl_values_match() {
+  case "$1" in
+    net.ipv4.ip_local_reserved_ports)
+      [[ "$(_ports_expand "$2")" == "$(_ports_expand "$3")" ]]
+      ;;
+    *)
+      # Normalise whitespace runs so multi-value keys compare fairly.
+      [[ "$(tr -s ' \t' ' ' <<<"$2")" == "$(tr -s ' \t' ' ' <<<"$3")" ]]
+      ;;
+  esac
+}
+
+# sysctl_verify [RENDERED] — compare the live kernel against the intent of
+# this profile. Returns 0 when everything matches, 3 on drift.
+# The caller passes the text it actually wrote: re-rendering here would read
+# live inputs again (listening ports, swap backend) and could compare against
+# a different expectation than the one on disk.
 ST_SYSCTL_DRIFT=()
 
 sysctl_verify() {
   ST_SYSCTL_DRIFT=()
-  local key expected actual
-  while IFS= read -r key; do
-    [[ -z $key || $key == \#* ]] && continue
-    expected="${key#*=}"
+  local rendered="${1:-}" line key expected actual
+  [[ -n $rendered ]] || rendered="$(_sysctl_render)"
+
+  while IFS= read -r line; do
+    [[ -z $line || $line == \#* ]] && continue
+    expected="${line#*=}"
     expected="${expected#"${expected%%[![:space:]]*}"}"
-    key="${key%%=*}"
+    key="${line%%=*}"
     key="${key//[[:space:]]/}"
+    key="${key#-}" # a leading "-" only tells systemd to ignore failures
     actual="$(sysctl_get "$key")"
-    # Normalise whitespace runs so multi-value keys compare fairly.
-    if [[ "$(tr -s ' \t' ' ' <<<"$actual")" != "$(tr -s ' \t' ' ' <<<"$expected")" ]]; then
+    _sysctl_values_match "$key" "$actual" "$expected" ||
       ST_SYSCTL_DRIFT+=("${key}|${actual}|${expected}")
-    fi
-  done < <(_sysctl_render)
+  done <<<"$rendered"
 
   ((${#ST_SYSCTL_DRIFT[@]} == 0)) && return 0
   return 3
@@ -247,12 +288,14 @@ sysctl_verify() {
 # every key against the live kernel. Applies NOTHING and tracks nothing.
 sysctl_dry_run() {
   sysctl_detect_bbr
-  printf '%s[Rendered %s]%s\n%s\n\n' "$C_TITLE" "$ST_SYSCTL_FILE" "$C_RESET" "$(_sysctl_render)"
+  local rendered
+  rendered="$(_sysctl_render)"
+  printf '%s[Rendered %s]%s\n%s\n\n' "$C_TITLE" "$ST_SYSCTL_FILE" "$C_RESET" "$rendered"
   printf '%s[Diff vs live kernel]%s\n' "$C_TITLE" "$C_RESET"
 
   local entry key actual expected total
-  total="$(_sysctl_render | grep -cE '^[a-z]')"
-  sysctl_verify || true # drift is the expected outcome here, not an error
+  total="$(grep -cE '^-?[a-z]' <<<"$rendered")"
+  sysctl_verify "$rendered" || true # drift is the expected outcome here
   for entry in "${ST_SYSCTL_DRIFT[@]-}"; do
     IFS='|' read -r key actual expected <<<"$entry"
     printf '  %s%-50s%s %s -> %s\n' "$C_KEY" "$key" "$C_RESET" "$actual" "$expected"
@@ -280,9 +323,13 @@ sysctl_apply() {
     modules+=(nf_conntrack)
   fi
 
+  # Rendered exactly once: the same text is written and later verified.
+  local rendered
+  rendered="$(_sysctl_render)"
+
   st_track_file "$ST_SYSCTL_FILE"
   mkdir -p "$(dirname "$ST_SYSCTL_FILE")"
-  _sysctl_render >"$ST_SYSCTL_FILE"
+  printf '%s\n' "$rendered" >"$ST_SYSCTL_FILE"
 
   if ((${#modules[@]} > 0)); then
     st_track_file "$ST_MODULES_FILE"
@@ -321,12 +368,14 @@ sysctl_apply() {
   fi
 
   local rc=0
-  if ! sysctl_verify; then
-    log_warn "sysctl verification: ${#ST_SYSCTL_DRIFT[@]} key(s) did not take the expected value (see --dry-run)."
-    local entry
+  if ! sysctl_verify "$rendered"; then
+    local entry key actual expected names=''
     for entry in "${ST_SYSCTL_DRIFT[@]}"; do
-      log_info "drift: ${entry}"
+      IFS='|' read -r key actual expected <<<"$entry"
+      names+="${key} "
+      log_info "drift: ${key} is '${actual}', expected '${expected}'"
     done
+    log_warn "${#ST_SYSCTL_DRIFT[@]} key(s) did not take the expected value: ${names% }"
     rc=3
   fi
 

@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.1.1] — 2026-07-23
+
+### Fixed
+
+- **Values read through a pipe could be silently discarded.** With
+  `pipefail`, an `awk`/`sed` that exits on the first match kills the
+  producer with SIGPIPE, the pipeline returns 141, and the caller's error
+  branch then throws away a value that was read perfectly well. This showed
+  up as `DNS over TLS: n/a` in the status report, and was latent in
+  `detect_ssh_port` — where losing a custom SSH port would have opened the
+  wrong port in UFW. Everything affected now captures the command output
+  first and parses it from a here-string
+  (`dns_over_tls_state`, `_dns_global_servers`, `_dns_probe_ms`,
+  `detect_ssh_port`, `_dns_persist_link`, `_abuse_local_subnet`, UFW and
+  qdisc status in the report).
+- **False "1 key did not take the expected value" warning.** The verify pass
+  re-rendered the configuration instead of checking the text that was
+  written, so live inputs (listening ports, swap backend) could differ
+  between the two renders; and the kernel normalises
+  `ip_local_reserved_ports` into merged ranges, which never matched the
+  written string. The rendered text is now produced once and reused, and
+  that key is compared as a port set.
+- The interface-specific `accept_ra` line is written with systemd's `-`
+  prefix so an early-boot apply cannot log an error when the NIC is not up
+  yet.
+- Warnings raised inside a step no longer break the status line: they are
+  buffered and printed underneath the step's verdict.
+- Failing sysctl keys are now named in the warning itself instead of only
+  in the log.
+
 ## [2.1.0] — 2026-07-23
 
 ### Fixed — critical

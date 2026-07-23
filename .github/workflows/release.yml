@@ -12,15 +12,51 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - name: Build
-        run: bash build.sh
+
+      # A tag that disagrees with the VERSION file would publish a script
+      # reporting the wrong version — catch it before anything is uploaded.
+      - name: Verify VERSION matches the tag
+        run: |
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "$file_version" != "$tag_version" ]; then
+            echo "::error::VERSION file says '${file_version}' but the tag is '${GITHUB_REF_NAME}'."
+            exit 1
+          fi
+          echo "VERSION and tag agree on ${file_version}."
+
+      # Builds dist/ and asserts it parses and reports the tagged version.
+      - name: Build and smoke test
+        run: bash tests/smoke.sh
+
       - name: Checksums
         run: cd dist && sha256sum server-tools.sh > SHA256SUMS
-      - name: Create GitHub Release
+
+      # Idempotent on purpose: a release drafted by hand in the web UI, or a
+      # re-run of this job, must attach the assets instead of failing. Notes
+      # written by hand are never overwritten.
+      - name: Publish assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            dist/server-tools.sh dist/SHA256SUMS \
-            --title "ServerTools ${GITHUB_REF_NAME}" \
-            --generate-notes
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists — uploading assets to it."
+            gh release upload "${GITHUB_REF_NAME}" \
+              dist/server-tools.sh dist/SHA256SUMS --clobber
+          else
+            echo "Creating release ${GITHUB_REF_NAME}."
+            gh release create "${GITHUB_REF_NAME}" \
+              dist/server-tools.sh dist/SHA256SUMS \
+              --title "ServerTools ${GITHUB_REF_NAME}" \
+              --generate-notes
+          fi
+
+      - name: Summary
+        run: |
+          {
+            echo "### ServerTools ${GITHUB_REF_NAME} published"
+            echo ''
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

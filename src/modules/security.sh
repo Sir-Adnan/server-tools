@@ -15,11 +15,23 @@ readonly ST_F2B_JAIL='/etc/fail2ban/jail.d/99-server-tools.local'
 readonly ST_SSHD_DROPIN='/etc/ssh/sshd_config.d/00-server-tools.conf'
 readonly ST_SSHD_DROPIN_LEGACY='/etc/ssh/sshd_config.d/99-server-tools.conf'
 
+# detect_ssh_port — the port sshd really listens on. `sshd -T` is the only
+# source that accounts for drop-ins; the config file and `ss` are fallbacks.
+# Nothing is parsed through a pipe: an early-exiting awk would SIGPIPE the
+# producer and pipefail would then discard a perfectly good answer — and
+# guessing 22 here could lock the user out through the firewall rules.
 detect_ssh_port() {
-  local port=''
-  port="$(awk '/^[[:space:]]*[Pp]ort[[:space:]]/ {print $2; exit}' /etc/ssh/sshd_config 2>/dev/null)" || port=''
+  local port='' out=''
+  if has_cmd sshd; then
+    out="$(sshd -T 2>/dev/null)" || out=''
+    [[ -n $out ]] && port="$(awk '$1 == "port" {print $2; exit}' <<<"$out")"
+  fi
+  if [[ -z $port ]]; then
+    port="$(awk '/^[[:space:]]*[Pp]ort[[:space:]]/ {print $2; exit}' /etc/ssh/sshd_config 2>/dev/null)" || port=''
+  fi
   if [[ -z $port ]] && has_cmd ss; then
-    port="$(ss -tnlp 2>/dev/null | awk '/sshd/ {sub(/.*:/, "", $4); print $4; exit}')" || port=''
+    out="$(ss -tnlp 2>/dev/null)" || out=''
+    [[ -n $out ]] && port="$(awk '/sshd/ {sub(/.*:/, "", $4); print $4; exit}' <<<"$out")"
   fi
   [[ $port =~ ^[0-9]+$ ]] || port=22
   printf '%s' "$port"
@@ -252,7 +264,7 @@ security_antiabuse() {
 
   # The provider's own subnet must stay allowed, and the allow rule has to be
   # inserted BEFORE the deny rules to win.
-  gw_net="$(_abuse_local_subnet)"
+  gw_net="$(_abuse_local_subnet)" || gw_net=''
   if [[ -n $gw_net ]]; then
     printf 'Keeping the local subnet %s reachable.\n' "$gw_net"
     ufw insert 1 allow out to "$gw_net" >/dev/null 2>>"$ST_LOG_FILE" ||
@@ -285,12 +297,12 @@ security_antiabuse() {
 # _abuse_local_subnet — the CIDR the default gateway lives in, so blocking
 # private ranges never cuts off the provider's own network.
 _abuse_local_subnet() {
-  local iface
-  iface="$(net_default_iface)" || return 0
+  local iface out
   has_cmd ip || return 0
-  ip -o -4 addr show dev "$iface" scope global 2>/dev/null |
-    awk '{print $4; exit}' |
-    awk -F/ '{split($1, o, "."); print o[1] "." o[2] "." o[3] ".0/" $2}'
+  iface="$(net_default_iface)" || return 0
+  [[ -n $iface ]] || return 0
+  out="$(ip -o -4 addr show dev "$iface" scope global 2>/dev/null)" || return 0
+  awk 'NR == 1 {split($4, a, "/"); split(a[1], o, "."); print o[1] "." o[2] "." o[3] ".0/" a[2]}' <<<"$out"
 }
 
 # security_node_ports — a node's API port only ever talks to its panel.

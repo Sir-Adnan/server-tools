@@ -43,8 +43,18 @@ log_debug() {
 
 log_info() { _log INFO "$@"; }
 
+# While a step is running its status line is still open ("... "), so console
+# warnings are buffered and flushed by st_run_step right after the verdict.
+# The log file always receives them immediately.
+ST_LOG_BUFFERING=0
+ST_LOG_BUFFER=()
+
 log_warn() {
   _log WARN "$@"
+  if ((ST_LOG_BUFFERING)); then
+    ST_LOG_BUFFER+=("$*")
+    return 0
+  fi
   printf '%bWARN%b  %s\n' "$C_WARN" "$C_RESET" "$*" >&2
 }
 

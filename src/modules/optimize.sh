@@ -22,10 +22,15 @@ ST_AUTO_LIMITS=1
 ST_AUTO_EXTRAS=1
 
 st_run_step() { # st_run_step TITLE FN
-  local title="$1" fn="$2" rc=0
+  local title="$1" fn="$2" rc=0 note
   ST_STEP_IDX=$((ST_STEP_IDX + 1))
   printf '%s[%d/%d]%s %s ... ' "$C_KEY" "$ST_STEP_IDX" "$ST_STEP_TOTAL" "$C_RESET" "$title"
+
+  # Keep the status line intact: warnings are collected and printed below it.
+  ST_LOG_BUFFER=()
+  ST_LOG_BUFFERING=1
   "$fn" || rc=$?
+  ST_LOG_BUFFERING=0
   case "$rc" in
     0)
       printf '%sOK%s\n' "$C_OK" "$C_RESET"
@@ -46,6 +51,11 @@ st_run_step() { # st_run_step TITLE FN
       st_escalate_exit 1
       ;;
   esac
+
+  for note in "${ST_LOG_BUFFER[@]-}"; do
+    [[ -n $note ]] && printf '      %s%s%s\n' "$C_MUTED" "$note" "$C_RESET"
+  done
+  ST_LOG_BUFFER=()
   return 0
 }
 

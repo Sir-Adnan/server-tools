@@ -59,11 +59,27 @@ _dns_link_servers() {
     sed -e 's/^Link [0-9]* ([^)]*)://' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'
 }
 
+# _resolvectl_status — cached copy of `resolvectl status`.
+# Parsing it through a pipe is a trap: an awk that exits early kills the
+# producer with SIGPIPE, pipefail turns that into a failed command, and the
+# caller's error branch then discards the value that was read correctly.
+# Capture first, parse from a here-string.
+ST_RESOLVECTL_STATUS=''
+
+_resolvectl_status() {
+  has_cmd resolvectl || return 1
+  if [[ -z $ST_RESOLVECTL_STATUS ]]; then
+    ST_RESOLVECTL_STATUS="$(resolvectl status 2>/dev/null)" || ST_RESOLVECTL_STATUS=''
+  fi
+  [[ -n $ST_RESOLVECTL_STATUS ]] || return 1
+  printf '%s' "$ST_RESOLVECTL_STATUS"
+}
+
 # _dns_global_servers — servers in the resolved global scope ("" when none).
 _dns_global_servers() {
-  has_cmd resolvectl || return 0
-  resolvectl status 2>/dev/null |
-    awk '/^ *DNS Servers:/ {sub(/^ *DNS Servers: */, ""); print; exit}'
+  local status
+  status="$(_resolvectl_status)" || return 0
+  awk '/^ *DNS Servers:/ {sub(/^ *DNS Servers: */, ""); print; exit}' <<<"$status"
 }
 
 # dns_effective_servers — what will really answer queries: link scope first
@@ -91,13 +107,10 @@ dns_effective_servers() {
 
 # dns_over_tls_state — current DNSOverTLS mode, "n/a" without resolved.
 dns_over_tls_state() {
-  has_cmd resolvectl || {
-    printf 'n/a'
-    return 0
-  }
-  local mode
-  mode="$(resolvectl status 2>/dev/null |
-    awk 'match($0, /DNSOverTLS=[a-z-]+/) {print substr($0, RSTART + 11, RLENGTH - 11); exit}')" || mode=''
+  local status mode=''
+  if status="$(_resolvectl_status)"; then
+    mode="$(sed -n 's/.*DNSOverTLS=\([^ ]*\).*/\1/p' <<<"$status" | head -n1)"
+  fi
   printf '%s' "${mode:-n/a}"
 }
 
@@ -106,12 +119,13 @@ dns_over_tls_state() {
 # _dns_probe_ms IP — a real DNS query time when dig exists (resolvers often
 # deprioritize ICMP, so ping understates real performance); ping fallback.
 _dns_probe_ms() {
+  local out=''
   if has_cmd dig; then
-    dig +tries=1 +time=2 "@$1" google.com A 2>/dev/null |
-      awk '/Query time:/ {print $4; exit}'
+    out="$(dig +tries=1 +time=2 "@$1" google.com A 2>/dev/null)" || return 0
+    awk '/Query time:/ {print $4; exit}' <<<"$out"
   elif has_cmd ping; then
-    ping -c 1 -W 1 "$1" 2>/dev/null |
-      awk -F'time=' '/time=/ {split($2, a, " "); print a[1]; exit}'
+    out="$(ping -c 1 -W 1 "$1" 2>/dev/null)" || return 0
+    awk -F'time=' '/time=/ {split($2, a, " "); print a[1]; exit}' <<<"$out"
   fi
 }
 
@@ -226,8 +240,9 @@ dns_resolve_cli() {
 _dns_persist_link() {
   local iface="$1" netfile='' dropin
   if has_cmd networkctl; then
-    netfile="$(SYSTEMD_COLORS=0 networkctl status --no-pager "$iface" 2>/dev/null |
-      awk '/Network File:/ {print $NF; exit}')" || netfile=''
+    local status
+    status="$(SYSTEMD_COLORS=0 networkctl status --no-pager "$iface" 2>/dev/null)" || status=''
+    [[ -n $status ]] && netfile="$(awk '/Network File:/ {print $NF; exit}' <<<"$status")"
   fi
 
   if [[ $netfile == /*.network ]]; then
