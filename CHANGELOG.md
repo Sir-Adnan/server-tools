@@ -4,6 +4,48 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] — 2026-07-24
+
+### Added
+
+- **NOTRACK — exempt proxy data ports from connection tracking.** New
+  Network-tools action (option `n`) for userspace-proxy nodes (Xray/Reality,
+  VLESS/VMess/Trojan, Hysteria). Such a proxy terminates every inbound
+  connection in userspace and opens its own outbound sockets, so the conntrack
+  entry the kernel creates for each of the millions of short-lived client
+  connections is pure overhead. Exempting the proxy ports (raw table, both
+  directions, IPv4+IPv6) keeps the conntrack table near-empty — it can no
+  longer hit `nf_conntrack_max` under load — and removes the per-packet
+  tracking cost on the hottest path on the box. SSH and detected WireGuard
+  ports are excluded automatically because they genuinely need conntrack; the
+  target form is probed per kernel (`-j CT --notrack`, else legacy
+  `-j NOTRACK`). Persistence is a zero-footprint oneshot systemd unit that
+  re-adds the rules at boot and removes them on rollback; `notrack_verify`
+  joins the Doctor drift checks.
+
+### Fixed
+
+- **`--dry-run` crashed on a host with no default route.** `_sysctl_render`
+  ended on `[[ -n $iface ]] && printf …`; with no default interface that
+  guard is false, so the function returned non-zero, and the bare
+  `rendered="$(_sysctl_render)"` propagated it into the ERR trap under
+  `errexit`. Value-producing helpers now return success explicitly.
+- **The ERR trap fired on incidental non-zero returns.** Same root cause as
+  above generalised: a helper whose stdout is captured must not leak the exit
+  status of a trailing conditional. Documented the contract and hardened the
+  one helper that violated it.
+- **"Effect since baseline" was broken on every host.** The global
+  `IFS=$'\n\t'` has no space, so the space-separated `awk` output of the TCP
+  counters landed entirely in the first variable, and the delta arithmetic in
+  `snapshot_report` then operated on `"a b c"`. The counter read now forces a
+  space `IFS`.
+- **The default interface could be silently blanked.** `net_default_iface`
+  and `net_default_gw` piped `ip route` into an early-exiting `awk`; the
+  SIGPIPE'd `ip` made the pipeline return 141 under `pipefail`, and the
+  callers' `|| x=''` guards then discarded a correct answer. Both capture the
+  route first and parse it from a here-string (same fix as the 2.1.1 batch),
+  which also removes the crash path above on hosts that *do* have a route.
+
 ## [2.1.2] — 2026-07-23
 
 ### Fixed

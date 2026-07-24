@@ -234,6 +234,7 @@ tools_menu() {
     ui_menu_item 3 "TCP/conntrack status" "BBR, forwarding, table usage"
     ui_menu_item 4 "Listening ports" "ss -tulnp snapshot"
     ui_menu_item 5 "MSS clamping" "fix 'VPN connects but no sites' (WireGuard/NAT)"
+    ui_menu_item n "Conntrack NOTRACK" "exempt proxy ports from tracking (Xray/Reality)"
     ui_menu_item 6 "Docker+UFW audit" "check the firewall bypass"
     ui_menu_item 7 "Support report" "full plain-text dump for issues/tickets"
     ui_menu_item 8 "XanMod kernel (BBRv3)" "ADVANCED — replaces the kernel"
@@ -263,6 +264,10 @@ tools_menu() {
         ;;
       5)
         vpn_mss_clamp
+        ui_pause
+        ;;
+      n | N)
+        vpn_conntrack_bypass
         ui_pause
         ;;
       6)

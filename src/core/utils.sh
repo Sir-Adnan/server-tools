@@ -162,16 +162,23 @@ net_dns_capable_links() {
     grep -vE '^(lo|docker[0-9]*|br-|veth|cni|virbr|kube)' || true
 }
 
+# net_default_iface / net_default_gw — read from the default route.
+# The route is captured first, then parsed from a here-string: piping into an
+# awk that exits on the first match would SIGPIPE `ip`, and under pipefail the
+# function would return 141 even on success — which the callers' `|| x=''`
+# guards would then mistake for failure and blank a perfectly good value.
 net_default_iface() {
   has_cmd ip || return 0
-  ip route show default 2>/dev/null |
-    awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}'
+  local route
+  route="$(ip route show default 2>/dev/null)" || return 0
+  awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}' <<<"$route"
 }
 
 net_default_gw() {
   has_cmd ip || return 0
-  ip route show default 2>/dev/null |
-    awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}'
+  local route
+  route="$(ip route show default 2>/dev/null)" || return 0
+  awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}' <<<"$route"
 }
 
 # pkg_install PACKAGE — caller must already have the user's consent

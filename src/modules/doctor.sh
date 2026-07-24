@@ -19,6 +19,7 @@ readonly -a ST_DOCTOR_CHECKS=(
   'Swap|swap_verify|Custom Optimize, enable the swap step'
   'SSH hardening|ssh_verify|Security menu, option 3'
   'MSS clamping|mss_verify|Network tools, option 5'
+  'Conntrack NOTRACK|notrack_verify|Network tools, option n'
 )
 
 ST_DOCTOR_DRIFT=0

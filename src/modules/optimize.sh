@@ -69,9 +69,13 @@ _snapshot_counters() {
   local retrans='0' insegs='0' outsegs='0' drops='0' ct='0'
   if [[ -r /proc/net/snmp ]]; then
     # The Tcp: header line names the columns; the next Tcp: line holds values.
-    read -r retrans insegs outsegs < <(awk '
+    # IFS is forced to a space for this read: the global IFS ($'\n\t') has no
+    # space, so awk's space-separated output would otherwise land entirely in
+    # $retrans and break the arithmetic in snapshot_report. A missing snmp
+    # table (some containers) just leaves the defaults above.
+    IFS=' ' read -r retrans insegs outsegs < <(awk '
       /^Tcp:/ { if (!h) { for (i = 1; i <= NF; i++) idx[$i] = i; h = 1; next }
-                print $idx["RetransSegs"], $idx["InSegs"], $idx["OutSegs"]; exit }' /proc/net/snmp)
+                print $idx["RetransSegs"], $idx["InSegs"], $idx["OutSegs"]; exit }' /proc/net/snmp) || true
   fi
   if [[ -r /proc/net/dev ]]; then
     drops="$(awk 'NR > 2 {rx += $5; tx += $12} END {print rx + tx + 0}' /proc/net/dev)"

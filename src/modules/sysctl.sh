@@ -216,6 +216,13 @@ EOF
     # interface does not exist yet at early boot, instead of logging a error.
     [[ -n $iface ]] && printf -- '-net.ipv6.conf.%s.accept_ra = 2\n' "$iface"
   fi
+
+  # This helper's stdout is captured via `rendered="$(_sysctl_render)"`. Under
+  # errexit a bare assignment propagates the callee's exit status, so a
+  # trailing conditional evaluating false (e.g. the accept_ra guard above on a
+  # host with no default route) would trip the ERR trap and abort the run.
+  # Value-producing helpers must therefore always return success explicitly.
+  return 0
 }
 
 # _ports_expand LIST — "80,1000-1002" -> a sorted, space separated port set.
