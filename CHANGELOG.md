@@ -4,6 +4,54 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.0] — 2026-07-24
+
+Inspired by a comparison with `jestivald/node-accelerator`: adopted its best
+data-path ideas within our zero-footprint rules, made Quick Optimize more
+complete, and reworked the UI.
+
+### Added
+
+- **CPU/NIC performance step (`perf.sh`), on by default in Quick Optimize.**
+  Three `/sys`-level wins that sysctl cannot express, all applied live and
+  persisted through a single zero-footprint oneshot unit:
+  - **RPS/RFS/XPS** — spreads NIC softirq processing across every core.
+    Decisive on the single-queue virtio NICs most VPS ship, where one core
+    otherwise caps the whole node's packet rate. **Enabled only when the NIC
+    has fewer hardware queues than cores** (a multi-queue NIC already spreads
+    via RSS); override with the `rps_mode` config key (`auto`/`on`/`off`).
+  - **CPU governor = performance** — removes clock ramp-up latency on bursty
+    proxy traffic; silently skipped where `cpufreq` is absent (typical VPS).
+  - **Transparent Huge Pages = madvise** — stops khugepaged compaction stalls
+    from adding tail-latency spikes, without denying THP to code that asks.
+  Every write is non-disruptive (takes effect without resetting the link), so
+  it is safe on a node already carrying users. `perf_verify` joins Doctor;
+  `--no-perf` skips it in `--auto`.
+- **New high-value base sysctls** (all Layer 1, universally safe): `fs.nr_open`
+  (raising nofile is silently capped without it), `vm.max_map_count = 262144`
+  (Xray/sing-box map many buffers per connection), `net.core.netdev_budget`
+  with `netdev_budget_usecs` (single-core PPS ceiling), `tcp_min_snd_mss = 512`
+  (CVE-2019-11479 floor), and ICMP broadcast/bogus-error hardening.
+
+### Changed
+
+- **UI redesign.** Grouped main menu (Optimize / Inspect / Recover / Secure /
+  Tools / Maintain), an at-a-glance optimized/not-optimized status badge on the
+  dashboard, sleeker `▸` section headings and `❯ [n] Label — hint` menu rows,
+  a beginner hint line, and a new `ui_badge`/`ui_menu_group`/`ui_hint` toolkit.
+  All glyphs degrade to ASCII on non-UTF-8/`NO_COLOR`/dumb terminals.
+- New `log_note` helper for informational, step-buffered asides.
+
+### Comparison notes (deliberately NOT adopted)
+
+- `ethtool -G` ring/coalesce tuning — can reset the link and harms latency on
+  many hypervisors (already excluded in `docs/SYSCTL.md`); kept out so the perf
+  step stays safe to run on a live node.
+- CrowdSec, fleet auto-sync, blocklist auto-refresh — all require a resident
+  agent or timer, which violates the zero-footprint rule. The NOTRACK feature
+  (2.2.0) and per-IP anti-abuse already cover the node-side conntrack/abuse
+  surface without a daemon.
+
 ## [2.2.0] — 2026-07-24
 
 ### Added

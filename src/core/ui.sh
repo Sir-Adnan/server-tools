@@ -20,6 +20,12 @@ ui_repeat() {
   printf '%s' "${pad// /$1}"
 }
 
+# _ui_glyph UTF8 ASCII — the first form on UTF-8 terminals, the second (safe
+# on any terminal, and under NO_COLOR/dumb) everywhere else.
+_ui_glyph() {
+  if ((ST_UTF8)); then printf '%s' "$1"; else printf '%s' "$2"; fi
+}
+
 ui_hr() {
   local ch='-'
   ((ST_UTF8)) && ch='─'
@@ -48,8 +54,38 @@ ui_title() {
   ui_hr
 }
 
+# ui_section TITLE — a titled sub-heading (▸ Title).
 ui_section() {
-  printf '%s[%s]%s\n' "$C_TITLE" "$1" "$C_RESET"
+  printf '%s%s %s%s\n' "$C_TITLE" "$(_ui_glyph '▸' '#')" "$1" "$C_RESET"
+}
+
+# ui_menu_group TITLE — a titled separator that groups related menu items.
+ui_menu_group() {
+  local title="$1" ch='-' width text rest
+  ((ST_UTF8)) && ch='─'
+  width="$(ui_width)"
+  text=" ${title} "
+  rest=$((width - 2 - ${#text}))
+  ((rest < 0)) && rest=0
+  printf '\n%s%s%s%s%s%s%s\n' \
+    "$C_LINE" "$(ui_repeat "$ch" 2)" \
+    "$C_ACCENT" "$text" \
+    "$C_LINE" "$(ui_repeat "$ch" "$rest")" "$C_RESET"
+}
+
+# ui_badge STATE — a colored status glyph. STATE: ok | warn | err | idle.
+ui_badge() {
+  case "$1" in
+    ok) printf '%s%s%s' "$C_OK" "$(_ui_glyph '●' '[ok]')" "$C_RESET" ;;
+    warn) printf '%s%s%s' "$C_WARN" "$(_ui_glyph '▲' '[!]')" "$C_RESET" ;;
+    err) printf '%s%s%s' "$C_ERR" "$(_ui_glyph '✘' '[x]')" "$C_RESET" ;;
+    *) printf '%s%s%s' "$C_MUTED" "$(_ui_glyph '○' '[-]')" "$C_RESET" ;;
+  esac
+}
+
+# ui_hint TEXT — a dim, unobtrusive helper line for less-experienced users.
+ui_hint() {
+  printf ' %s%s %s%s\n' "$C_MUTED" "$(_ui_glyph 'ℹ' 'i')" "$1" "$C_RESET"
 }
 
 # ui_kv KEY VALUE — colored label, plain value.
@@ -57,9 +93,18 @@ ui_kv() {
   printf '  %s%-21s%s %s\n' "$C_KEY" "$1:" "$C_RESET" "$2"
 }
 
-# ui_menu_item KEY LABEL [HINT]
+# ui_menu_item KEY LABEL [HINT] — a selectable row: ❯ [key] Label — hint.
 ui_menu_item() {
-  printf '  %s[%s]%s %-20s %s%s%s\n' "$C_KEY" "$1" "$C_RESET" "$2" "$C_MUTED" "${3:-}" "$C_RESET"
+  local key="$1" label="$2" hint="${3:-}" arrow
+  arrow="$(_ui_glyph '❯' '>')"
+  if [[ -n $hint ]]; then
+    printf '  %s%s%s %s[%s]%s %-22s %s%s %s%s\n' \
+      "$C_ACCENT" "$arrow" "$C_RESET" "$C_KEY" "$key" "$C_RESET" \
+      "$label" "$C_MUTED" "$(_ui_glyph '—' '-')" "$hint" "$C_RESET"
+  else
+    printf '  %s%s%s %s[%s]%s %s\n' \
+      "$C_ACCENT" "$arrow" "$C_RESET" "$C_KEY" "$key" "$C_RESET" "$label"
+  fi
 }
 
 ui_logo() {
@@ -74,7 +119,8 @@ ui_logo() {
  |____/ \___|_|    \_/ \___|_|   |_|\___/ \___/|_|___/
 LOGO
   printf '%s' "$C_RESET"
-  ui_center "v${ST_VERSION} — server optimization toolkit by @UnknownZero" "$C_MUTED"
+  ui_center "Linux server optimization · zero runtime footprint · by @UnknownZero" "$C_MUTED"
+  ui_center "v${ST_VERSION}" "$C_ACCENT"
   ui_hr_heavy
 }
 

@@ -27,6 +27,8 @@ BBR persistence: `tcp_bbr` in `/etc/modules-load.d/server-tools.conf`
 | `net.ipv4.tcp_max_syn_backlog` | same as somaxconn | SYN flood headroom |
 | `net.core.netdev_max_backlog` | 16384 / 32768 / 65536 / 65536 | per-CPU ingress queue |
 | `net.ipv4.tcp_syncookies` | `1` | SYN flood fallback |
+| `net.core.netdev_budget` | `600` | packets drained per softirq poll — a single core otherwise caps PPS (paired with RPS, below) |
+| `net.core.netdev_budget_usecs` | `8000` | time budget for the same poll |
 
 ### Ports, timers, keepalive
 
@@ -42,6 +44,7 @@ BBR persistence: `tcp_bbr` in `/etc/modules-load.d/server-tools.conf`
 | `net.ipv4.tcp_notsent_lowat` | `16384` | caps unsent-buffer depth — lower proxy latency (Cloudflare-documented) |
 | `net.ipv4.tcp_rfc1337` | `1` | protects TIME-WAIT sockets from RST assassination |
 | `net.ipv4.tcp_mtu_probing` | `1` | **changed vs legacy (was 0)** — mode 1 activates only after a blackhole is detected, preventing stalls on ICMP-filtered paths; the harmful aggressive mode is `2` |
+| `net.ipv4.tcp_min_snd_mss` | `512` | CVE-2019-11479 safe floor — keeps PMTU probing useful without letting a peer force a pathologically small MSS (goodput collapse / remote DoS) |
 
 Applying qdisc live: `default_qdisc` only affects new interfaces, so the
 module also runs `tc qdisc replace` on the default interface — no reboot
@@ -69,15 +72,22 @@ needed for the switch to fq.
 ### Reserved service ports (dynamic)
 
 `net.ipv4.ip_local_reserved_ports` is generated at apply time from the
-listening ports that fall inside our ephemeral range (10240-65535, up to 32
-entries) — an outgoing connection can then never grab a panel/node port.
+listening ports that fall inside our ephemeral range (10240-65535, up to 64
+entries after collapsing consecutive runs into ranges) — an outgoing
+connection can then never grab a panel/node port. TCP listeners are taken
+as-is; UDP is sampled twice a second apart and only the stable intersection is
+kept, so a proxy's transient outbound sockets never enter the list.
 
 ### System capacity
 
 | Key | Value | Why |
 | --- | --- | --- |
 | `fs.file-max` | `2097152` | sockets are files; 100k users × several fds |
-| `vm.swappiness` | `10` | swap is an OOM safety net, not working memory |
+| `fs.nr_open` | `2097152` | per-process fd ceiling — raising the nofile limit is silently capped by this |
+| `vm.max_map_count` | `262144` | Xray/sing-box map many buffers per connection; the ~65k default is a scale ceiling |
+| `vm.swappiness` | `10` | swap is an OOM safety net, not working memory (100 on zram — see swap module) |
+| `net.ipv4.icmp_echo_ignore_broadcasts` | `1` | drop broadcast pings (smurf hardening) |
+| `net.ipv4.icmp_ignore_bogus_error_responses` | `1` | ignore malformed ICMP error replies |
 
 ## Layer 2 — workload keys
 
@@ -105,6 +115,24 @@ Non-sysctl companion for `wireguard`: MSS clamping
 
 Base layer only, with tier capped at M — a dashboard host doesn't need a 1M
 conntrack table; RAM is better left to the database.
+
+## Companion — data-path tuning that isn't sysctl (`src/modules/perf.sh`)
+
+Some wins live in `/sys`, not `/etc/sysctl.d`. The perf module applies them
+live and persists each through ONE oneshot systemd unit
+(`server-tools-perf.service`) that runs a generated, idempotent boot script and
+exits — no resident process. The script and unit are tracked, so rollback
+removes them; `perf_verify` reports drift in Doctor.
+
+| Setting | Value | Why / guard |
+| --- | --- | --- |
+| RPS/RFS/XPS | `rps_cpus`/`xps_cpus` = all-cores mask; `rps_flow_cnt` = 4096; `net.core.rps_sock_flow_entries` = 32768 | spreads NIC softirq across cores — decisive on single-queue virtio. **Applied only when the NIC has fewer hardware queues than cores** (RSS already spreads a multi-queue NIC). Override: `rps_mode` config = `auto`\|`on`\|`off` |
+| CPU governor | `performance` | no ramp-up latency on bursty proxy traffic. Skipped silently where `cpufreq` is absent (typical VPS) |
+| Transparent Huge Pages | `madvise` (enabled + defrag) | stops khugepaged compaction stalls from adding tail latency, without denying THP to code that explicitly asks for it (`never` would) |
+
+Non-disruptive by design: every write above takes effect for new packets/pages
+without resetting the link, so it is safe to apply on a node already carrying
+users. That is also why `ethtool -G` ring resizing is excluded (below).
 
 ## Deliberately NOT set
 

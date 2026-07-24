@@ -63,6 +63,18 @@ log_error() {
   printf '%bERROR%b %s\n' "$C_ERR" "$C_RESET" "$*" >&2
 }
 
+# log_note MESSAGE — an informational line for the user, buffered under the
+# running step exactly like a warning but without the alarm styling. Always
+# recorded in the log; used for "what was done and why" asides.
+log_note() {
+  _log INFO "$@"
+  if ((ST_LOG_BUFFERING)); then
+    ST_LOG_BUFFER+=("$*")
+    return 0
+  fi
+  printf '  %s%s%s\n' "$C_MUTED" "$*" "$C_RESET"
+}
+
 # die MESSAGE — log the error and exit with failure.
 die() {
   log_error "$@"

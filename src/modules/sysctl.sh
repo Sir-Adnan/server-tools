@@ -102,6 +102,10 @@ net.core.somaxconn = ${ST_SOMAXCONN}
 net.ipv4.tcp_max_syn_backlog = ${ST_SOMAXCONN}
 net.core.netdev_max_backlog = ${ST_NETDEV_BACKLOG}
 net.ipv4.tcp_syncookies = 1
+# Drain more packets per softirq before yielding — a single core can otherwise
+# cap the packet rate on a busy node (paired with RPS in the perf module).
+net.core.netdev_budget = 600
+net.core.netdev_budget_usecs = 8000
 
 # --- Ports, timers, keepalive
 net.ipv4.ip_local_port_range = 10240 65535
@@ -118,6 +122,9 @@ net.ipv4.tcp_notsent_lowat = 16384
 net.ipv4.tcp_rfc1337 = 1
 # Mode 1 probes only after a blackhole is detected (mode 2 is the harmful one).
 net.ipv4.tcp_mtu_probing = 1
+# CVE-2019-11479 safe floor: keeps PMTU probing useful without letting a peer
+# force a pathologically small MSS (goodput collapse / remote DoS).
+net.ipv4.tcp_min_snd_mss = 512
 
 # --- Buffers (tier ${ST_TIER})
 net.core.rmem_max = ${buf_bytes}
@@ -133,7 +140,13 @@ net.core.optmem_max = 65536
 
 # --- System capacity
 fs.file-max = 2097152
+fs.nr_open = 2097152
+# Xray/sing-box map many buffers per connection; the ~65k default caps scale.
+vm.max_map_count = 262144
 vm.swappiness = ${swappiness}
+# Cheap, universally-safe ICMP hardening.
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
 EOF
 
   # User-based capacity mode: bound total TCP memory explicitly so buffer

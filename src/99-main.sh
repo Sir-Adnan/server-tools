@@ -32,6 +32,7 @@ Options for --auto and --dry-run:
   --no-swap             Skip the swap step
   --no-limits           Skip the nofile limits step
   --no-extras           Skip the journald/NTP step
+  --no-perf             Skip the CPU/NIC performance step (RPS, governor, THP)
 
 General options:
   --json                Machine-readable output (--verify)
@@ -112,6 +113,10 @@ main() {
         ;;
       --no-extras)
         ST_AUTO_EXTRAS=0
+        tuning_opts='yes'
+        ;;
+      --no-perf)
+        ST_AUTO_PERF=0
         tuning_opts='yes'
         ;;
       --json) ST_OPT_JSON=1 ;;

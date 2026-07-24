@@ -7,12 +7,29 @@
 
 menu_dashboard() {
   ui_logo
+
+  # Optimized state is a first-class signal: a returning user should see at a
+  # glance whether this host has been tuned, without reading a report.
+  local prof tier status
+  prof="$(config_get last_profile '')"
+  tier="$(config_get last_tier '-')"
+  if [[ -n $prof ]]; then
+    status="$(ui_badge ok) optimized  ${C_MUTED}(profile ${prof} · tier ${tier})${C_RESET}"
+  else
+    status="$(ui_badge idle) not optimized yet  ${C_MUTED}(start with Quick Optimize)${C_RESET}"
+  fi
+
+  ui_section "System"
+  ui_kv "Host" "$(hostname 2>/dev/null || printf 'unknown')"
   ui_kv "OS" "$(os_pretty_name)"
   ui_kv "Kernel" "$(kernel_release)"
-  ui_kv "RAM" "$(mem_total_mb) MB · $(cpu_cores) core(s)"
+  ui_kv "Resources" "$(cpu_cores) vCPU · $(mem_total_mb) MB RAM · up $(uptime_pretty)"
+  printf '\n'
+  ui_section "Network & workload"
   ui_kv "Public IPv4" "$(net_public_ip4)"
-  ui_kv "TCP" "cc=$(sysctl_get net.ipv4.tcp_congestion_control) · qdisc=$(sysctl_get net.core.default_qdisc)"
+  ui_kv "TCP stack" "cc=$(sysctl_get net.ipv4.tcp_congestion_control) · qdisc=$(sysctl_get net.core.default_qdisc)"
   ui_kv "Detected" "$(detect_summary)"
+  ui_kv "Status" "$status"
   ui_hr
 }
 
@@ -85,19 +102,26 @@ main_menu() {
   local choice
   while true; do
     menu_dashboard
-    ui_menu_item 1 "Quick Optimize" "full base layer + auto-detected profile (recommended)"
+    ui_menu_group "Optimize"
+    ui_menu_item 1 "Quick Optimize" "full auto-tune, recommended — safe to re-run"
     ui_menu_item 2 "Custom Optimize" "pick profile and modules manually"
-    ui_menu_item 3 "System Status" "full report"
-    ui_menu_item 4 "Doctor" "is everything still in effect? (drift check)"
-    ui_menu_item 5 "Rollback" "undo changes"
-    ui_menu_item 6 "Security" "UFW / fail2ban / SSH / anti-abuse (optional)"
-    ui_menu_item 7 "Network & VPN tools" "ping, speed, live view, MSS, mirror"
-    ui_menu_item 8 "Node & Docker" "config backup, installers, container limits"
-    ui_menu_item 9 "Settings" "paths, config, install/update"
+    ui_menu_group "Inspect"
+    ui_menu_item 3 "System Status" "full live report"
+    ui_menu_item 4 "Doctor" "drift check — is everything still in effect?"
+    ui_menu_group "Recover"
+    ui_menu_item 5 "Rollback" "undo changes — restore to before ServerTools"
+    ui_menu_group "Secure"
+    ui_menu_item 6 "Security" "UFW · fail2ban · SSH · anti-abuse (optional)"
+    ui_menu_group "Tools"
+    ui_menu_item 7 "Network & VPN tools" "ping · speed · MSS · NOTRACK · live view"
+    ui_menu_item 8 "Node & Docker" "config backup · installers · container limits"
+    ui_menu_group "Maintain"
+    ui_menu_item 9 "Settings" "install 'st' command · self-update · paths"
     ui_menu_item 0 "Exit"
     ui_hr
+    ui_hint "New here? Choose 1 — it detects your workload and tunes everything safely."
     # EOF (e.g. closed stdin) simply exits the menu.
-    read -rp "Select: " choice || {
+    read -rp "$(_ui_glyph '❯' '>') Select an option: " choice || {
       printf '\n'
       return 0
     }

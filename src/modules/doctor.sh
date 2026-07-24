@@ -14,6 +14,7 @@
 # Registry: "label|verify function|repair hint"
 readonly -a ST_DOCTOR_CHECKS=(
   'Kernel tuning (sysctl)|sysctl_verify|re-run Quick Optimize'
+  'CPU/NIC performance|perf_verify|re-run Quick Optimize'
   'DNS servers|dns_verify|Quick Optimize, then pick the provider again'
   'File limits (nofile)|limits_verify|re-run Quick Optimize'
   'Swap|swap_verify|Custom Optimize, enable the swap step'

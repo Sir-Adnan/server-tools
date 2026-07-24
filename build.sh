@@ -28,6 +28,7 @@ SOURCES=(
   modules/swap.sh
   modules/limits.sh
   modules/extras.sh
+  modules/perf.sh
   modules/security.sh
   modules/vpn.sh
   modules/kernel.sh

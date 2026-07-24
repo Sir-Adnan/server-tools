@@ -20,6 +20,7 @@ ST_AUTO_DNS=''
 ST_AUTO_SWAP=1
 ST_AUTO_LIMITS=1
 ST_AUTO_EXTRAS=1
+ST_AUTO_PERF=1
 
 st_run_step() { # st_run_step TITLE FN
   local title="$1" fn="$2" rc=0 note
@@ -168,12 +169,12 @@ _optimize_show_plan() {
   fi
 }
 
-# _optimize_run WITH_DNS WITH_SWAP WITH_LIMITS WITH_EXTRAS  (each 0/1)
+# _optimize_run WITH_DNS WITH_SWAP WITH_LIMITS WITH_EXTRAS WITH_PERF  (each 0/1)
 _optimize_run() {
-  local with_dns="$1" with_swap="$2" with_limits="$3" with_extras="$4"
+  local with_dns="$1" with_swap="$2" with_limits="$3" with_extras="$4" with_perf="${5:-0}"
   ST_STEP_RESULTS=()
   ST_STEP_IDX=0
-  ST_STEP_TOTAL=$((1 + with_dns + with_swap + with_limits + with_extras))
+  ST_STEP_TOTAL=$((1 + with_dns + with_swap + with_limits + with_extras + with_perf))
   # Baseline first: counters must be read before anything is changed.
   snapshot_save
   ui_hr
@@ -181,6 +182,8 @@ _optimize_run() {
   # host ends up on compressed RAM (zram) or a disk swap file.
   ((with_swap)) && st_run_step "Swap" swap_apply
   st_run_step "Kernel network tuning (sysctl, tier ${ST_TIER})" sysctl_apply
+  # CPU/NIC data-path tuning (RPS/RFS/XPS, governor, THP) complements sysctl.
+  ((with_perf)) && st_run_step "CPU & NIC performance (RPS, governor, THP)" perf_apply
   ((with_limits)) && st_run_step "File-descriptor limits (nofile)" limits_apply
   ((with_extras)) && st_run_step "Journald cap & NTP" extras_apply
   ((with_dns)) && st_run_step "DNS (${ST_DNS1} / ${ST_DNS2})" dns_apply
@@ -279,7 +282,7 @@ quick_optimize() {
     ui_pause
     return 0
   fi
-  _optimize_run "$with_dns" 1 1 1
+  _optimize_run "$with_dns" 1 1 1 1
   ui_pause
 }
 
@@ -329,7 +332,7 @@ auto_optimize() {
 
   ui_title "Auto Optimize (non-interactive)"
   _optimize_show_plan
-  _optimize_run "$with_dns" "$ST_AUTO_SWAP" "$ST_AUTO_LIMITS" "$ST_AUTO_EXTRAS"
+  _optimize_run "$with_dns" "$ST_AUTO_SWAP" "$ST_AUTO_LIMITS" "$ST_AUTO_EXTRAS" "$ST_AUTO_PERF"
 }
 
 # dry_run_optimize — --dry-run: show the plan and the exact sysctl diff,
@@ -341,7 +344,8 @@ dry_run_optimize() {
   _optimize_show_plan
   ui_hr
   sysctl_dry_run
-  printf '\nA real run would also cover: nofile limits, journald cap & NTP, swap%s.\n' \
+  printf '\nA real run would also cover: CPU/NIC performance (RPS, governor, THP),\n'
+  printf 'nofile limits, journald cap & NTP, swap%s.\n' \
     "$([[ -n $ST_AUTO_DNS ]] && printf ', DNS')"
 }
 
@@ -397,9 +401,10 @@ custom_optimize() {
     ui_pause
     return 0
   fi
-  local with_swap=0 with_limits=0 with_extras=0 with_dns=0
+  local with_swap=0 with_limits=0 with_extras=0 with_perf=0 with_dns=0
   ui_confirm_yes "Raise file-descriptor limits?" && with_limits=1
   ui_confirm_yes "Cap journald disk usage and enable NTP?" && with_extras=1
+  ui_confirm_yes "Tune CPU/NIC data path (RPS, governor, THP)?" && with_perf=1
   ui_confirm_yes "Create a swap file if none exists?" && with_swap=1
   if dns_select_menu; then
     with_dns=1
@@ -410,6 +415,6 @@ custom_optimize() {
     ui_pause
     return 0
   fi
-  _optimize_run "$with_dns" "$with_swap" "$with_limits" "$with_extras"
+  _optimize_run "$with_dns" "$with_swap" "$with_limits" "$with_extras" "$with_perf"
   ui_pause
 }
