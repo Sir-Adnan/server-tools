@@ -76,6 +76,7 @@ _st_fmt_speed() {
 # a single flow rarely saturates a fast path.
 _st_cf_streams() {
   local n="$1" url="$2" dir="$3" prefix="$4" field="$5" upload="${6:-}" i
+  rm -f "${dir}/${prefix}"* 2>/dev/null # reusable across fallback attempts
   for ((i = 1; i <= n; i++)); do
     if [[ -n $upload ]]; then
       curl -o /dev/null -s --max-time 20 -w "%{${field}}\n" \
@@ -116,9 +117,8 @@ tools_speedtest() {
   ui_confirm "Run it now? (transfers up to ~500 MB)" || return 2
   printf '\n'
 
-  local base='https://speed.cloudflare.com' streams=4
-  local dl_each=104857600 ul_bytes=26214400 # 100 MB/stream down, 25 MB/stream up
-  local dir lat dl ul
+  local base='https://speed.cloudflare.com' streams=4 ul_bytes=26214400
+  local dir lat dl ul src dl_host='n/a'
 
   # --- Latency: best TCP-connect of three tiny requests --------------------
   printf '  %s%-9s%s measuring…' "$C_KEY" "Latency" "$C_RESET"
@@ -134,9 +134,22 @@ tools_speedtest() {
     return 1
   fi
 
-  # --- Download: N parallel streams, summed --------------------------------
+  # --- Download: parallel streams, with mirror fallback. Cloudflare's __down
+  # caps the byte count at 1e8, and some networks throttle large inbound CDN
+  # transfers even when upload is fine — so we try Cloudflare, then mirrors,
+  # and keep the first source that actually moves bytes.
   printf '  %s%-9s%s measuring…' "$C_KEY" "Download" "$C_RESET"
-  dl="$(_st_cf_streams "$streams" "${base}/__down?bytes=${dl_each}" "$dir" dl speed_download)"
+  dl=0
+  for src in \
+    "${base}/__down?bytes=100000000|Cloudflare" \
+    'https://speed.hetzner.de/100MB.bin|Hetzner' \
+    'http://ipv4.download.thinkbroadband.com/100MB.zip|thinkbroadband'; do
+    dl="$(_st_cf_streams "$streams" "${src%%|*}" "$dir" dl speed_download)"
+    if ((dl > 0)); then
+      dl_host="${src##*|}"
+      break
+    fi
+  done
   printf '\r  %s%-9s%s %s          \n' "$C_KEY" "Download" "$C_RESET" "$(_st_fmt_speed "$dl")"
 
   # --- Upload: N parallel streams of a zero-filled payload, summed ---------
@@ -151,9 +164,9 @@ tools_speedtest() {
     log_error "Could not reach the Cloudflare speed servers — network blocked? See the log."
     return 1
   fi
-  printf '  %s%-9s%s %sCloudflare · %d parallel streams%s\n' \
-    "$C_MUTED" "via" "$C_RESET" "$C_MUTED" "$streams" "$C_RESET"
-  log_info "Bandwidth test: down=${dl}B/s up=${ul}B/s ping=${lat:-?}ms (cloudflare, ${streams} streams)."
+  printf '  %s%-9s%s %sdown: %s · up: Cloudflare · %d streams%s\n' \
+    "$C_MUTED" "via" "$C_RESET" "$C_MUTED" "$dl_host" "$streams" "$C_RESET"
+  log_info "Bandwidth test: down=${dl}B/s (${dl_host}) up=${ul}B/s ping=${lat:-?}ms (${streams} streams)."
   return 0
 }
 

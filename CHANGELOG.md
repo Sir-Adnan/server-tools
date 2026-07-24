@@ -15,9 +15,11 @@ this project adheres to [Semantic Versioning](https://semver.org/).
   **download + upload + latency** measurement against Cloudflare's speed
   endpoints (`speed.cloudflare.com`): four parallel streams for realistic
   throughput, best-of-three TCP-connect latency, results shown live and
-  formatted (Mbit/s and MB/s). It needs only `curl`, works from Iran, and
-  never installs the fragile client. A genuine Ookla binary is still used when
-  it is already present.
+  formatted (Mbit/s and MB/s). Download falls back across mirrors (Cloudflare →
+  Hetzner → …) when a network throttles large inbound CDN transfers while
+  leaving upload fine. It needs only `curl`, works from Iran, and never
+  installs the fragile client. A genuine Ookla binary is still used when it is
+  already present.
 
 ### Fixed
 
