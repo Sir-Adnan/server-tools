@@ -4,22 +4,24 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [2.3.3] — 2026-07-24
+## [2.3.4] — 2026-07-24
 
 ### Changed
 
-- **Real bandwidth test with a proper UI.** The old option relied on the
-  deprecated speedtest.net Python client (`speedtest-cli`) — and even offered
-  to install it — which breaks against Ookla's API and is frequently filtered
-  from Iran, so it "worked once, then stopped." The test is now a genuine
-  **download + upload + latency** measurement against Cloudflare's speed
-  endpoints (`speed.cloudflare.com`): four parallel streams for realistic
-  throughput, best-of-three TCP-connect latency, results shown live and
-  formatted (Mbit/s and MB/s). Download falls back across mirrors (Cloudflare →
-  Hetzner → …) when a network throttles large inbound CDN transfers while
-  leaving upload fine. It needs only `curl`, works from Iran, and never
-  installs the fragile client. A genuine Ookla binary is still used when it is
-  already present.
+- **Reliable bandwidth test (Ookla-first).** The old option used the deprecated
+  speedtest.net Python client (`speedtest-cli`), which breaks against Ookla's
+  API and is filtered from Iran — it "worked once, then stopped." The plain
+  Cloudflare-HTTP replacement then hit `HTTP 403` on `__down` from some
+  server IPs (upload still worked, download read 0). The test now tries, in
+  order: (1) an Ookla binary already installed; (2) the **official Ookla CLI**,
+  fetched, run once and deleted — accurate, picks a nearby server, and immune
+  to Cloudflare 403s (zero persistent footprint, consent-based, like
+  `bench.sh`); (3) a self-contained HTTP test of **download + upload + latency**
+  with four parallel streams, a browser User-Agent (to dodge the 403), and
+  download mirror fallback (Cloudflare → Hetzner → …).
+- **Richer benchmark.** The disk test now averages **three 1 GB runs** (so a
+  single cached run can't flatter it), and the report adds the CPU model and
+  **AES-NI** status — which decides TLS/Reality throughput on a proxy node.
 
 ### Fixed
 
