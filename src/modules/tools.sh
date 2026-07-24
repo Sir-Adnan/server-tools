@@ -62,70 +62,98 @@ tools_listening_ports() {
   ss -tulnp 2>/dev/null | awk 'NR <= 30' || log_warn "Could not list sockets."
 }
 
-# tools_speedtest — bandwidth check. Uses a real speedtest client when the
-# host already has one; otherwise a plain HTTP download, which needs nothing
-# but curl. Both consume traffic, so both ask first.
-# tools_speedtest — measure bandwidth with whatever is available. A real
-# client is preferred; otherwise an HTTP download that tries several mirrors,
-# because a single CDN (Cloudflare) is often throttled or filtered from Iran —
-# the reason the previous single-URL version "did nothing" for some users.
+# _st_fmt_speed BYTES_PER_SEC — "938.5 Mbit/s  (117.3 MB/s)" or "n/a".
+_st_fmt_speed() {
+  awk -v s="${1:-0}" 'BEGIN {
+    if (s + 0 <= 0) { printf "n/a"; exit }
+    printf "%.1f Mbit/s  (%.1f MB/s)", s * 8 / 1000000, s / 1048576
+  }'
+}
+
+# _st_cf_streams N URL OUTDIR PREFIX WRITEOUT [UPLOAD_FILE] — run N parallel
+# curl transfers, each writing its %{WRITEOUT} to OUTDIR/PREFIX<i>, and echo
+# the summed rate (bytes/s). Parallel streams are what a real speed test uses:
+# a single flow rarely saturates a fast path.
+_st_cf_streams() {
+  local n="$1" url="$2" dir="$3" prefix="$4" field="$5" upload="${6:-}" i
+  for ((i = 1; i <= n; i++)); do
+    if [[ -n $upload ]]; then
+      curl -o /dev/null -s --max-time 20 -w "%{${field}}\n" \
+        --data-binary @"$upload" "$url" >"${dir}/${prefix}${i}" 2>/dev/null &
+    else
+      curl -o /dev/null -s --max-time 20 -w "%{${field}}\n" \
+        "$url" >"${dir}/${prefix}${i}" 2>/dev/null &
+    fi
+  done
+  wait
+  cat "${dir}/${prefix}"* 2>/dev/null | awk '{s += $1} END {printf "%.0f", s + 0}'
+}
+
+# tools_speedtest — a real, reliable bandwidth test: download, upload AND
+# latency. Prefers a genuine Ookla binary if present; otherwise measures
+# against Cloudflare's speed endpoints (speed.cloudflare.com) with parallel
+# streams. It never touches the deprecated speedtest.net Python client, which
+# breaks against Ookla's API and is frequently filtered from Iran — the reason
+# the option "worked once, then stopped".
 tools_speedtest() {
   ui_section "Bandwidth test"
 
-  if has_cmd speedtest; then
-    ui_confirm "Run Ookla speedtest now? (uses bandwidth)" || return 2
-    speedtest --accept-license --accept-gdpr 2>>"$ST_LOG_FILE" ||
-      speedtest 2>>"$ST_LOG_FILE" ||
-      log_warn "speedtest exited with an error — see the log."
+  # Use a real Ookla binary only — the Python "speedtest"/"speedtest-cli" is
+  # excluded on purpose (unreliable), even when it shadows the name.
+  if has_cmd speedtest && speedtest --version 2>/dev/null | grep -qi 'ookla'; then
+    ui_confirm "Run the installed Ookla speedtest now? (uses bandwidth)" || return 2
+    speedtest --accept-license --accept-gdpr || log_warn "Ookla speedtest exited with an error."
     return 0
-  fi
-  if has_cmd speedtest-cli; then
-    ui_confirm "Run speedtest-cli now? (uses bandwidth)" || return 2
-    speedtest-cli --simple 2>>"$ST_LOG_FILE" ||
-      log_warn "speedtest-cli exited with an error — see the log."
-    return 0
-  fi
-
-  printf 'No speedtest client is installed on this server.\n'
-  if has_cmd apt-get && ui_confirm "Install speedtest-cli now? (small, from the distro repo)"; then
-    if pkg_install speedtest-cli && has_cmd speedtest-cli; then
-      speedtest-cli --simple 2>>"$ST_LOG_FILE" || log_warn "speedtest-cli exited with an error."
-      return 0
-    fi
-    log_warn "Install did not complete — falling back to an HTTP download test."
   fi
 
   if ! has_cmd curl; then
-    log_error "curl is missing — cannot run the HTTP fallback test."
+    log_error "curl is required for the bandwidth test."
     return 1
   fi
-  printf 'Measuring throughput via HTTP download (several mirrors are tried).\n'
-  ui_confirm "Download ~100 MB now?" || return 2
 
-  local url host speed=''
-  for url in \
-    'https://speed.cloudflare.com/__down?bytes=104857600' \
-    'https://speed.hetzner.de/100MB.bin' \
-    'http://ipv4.download.thinkbroadband.com/100MB.zip'; do
-    host="${url#*://}"
-    host="${host%%/*}"
-    printf '  %-32s ' "${host} ..."
-    speed="$(curl -o /dev/null -fsS --max-time 60 -w '%{speed_download}' "$url" 2>>"$ST_LOG_FILE")" || speed=''
-    if [[ -n $speed ]] && awk -v s="$speed" 'BEGIN { exit !(s + 0 > 0) }'; then
-      printf '%sok%s\n' "$C_OK" "$C_RESET"
-      break
-    fi
-    printf '%sunreachable%s\n' "$C_MUTED" "$C_RESET"
-    speed=''
-  done
+  printf 'A real %sdownload · upload · latency%s test via Cloudflare — no client\n' "$C_KEY" "$C_RESET"
+  printf 'needed, and reachable from Iran.\n\n'
+  ui_confirm "Run it now? (transfers up to ~500 MB)" || return 2
+  printf '\n'
 
-  if [[ -z $speed ]]; then
-    log_error "All download mirrors failed or were unreachable — see the log."
+  local base='https://speed.cloudflare.com' streams=4
+  local dl_each=104857600 ul_bytes=26214400 # 100 MB/stream down, 25 MB/stream up
+  local dir lat dl ul
+
+  # --- Latency: best TCP-connect of three tiny requests --------------------
+  printf '  %s%-9s%s measuring…' "$C_KEY" "Latency" "$C_RESET"
+  lat="$(for _ in 1 2 3; do
+    curl -o /dev/null -s -w '%{time_connect}\n' --max-time 5 "${base}/__down?bytes=0" 2>/dev/null
+  done | awk 'NF && $1 + 0 > 0 {if (m == 0 || $1 < m) m = $1} END {if (m > 0) printf "%.1f", m * 1000}')"
+  printf '\r  %s%-9s%s %s ms            \n' "$C_KEY" "Latency" "$C_RESET" "${lat:-n/a}"
+
+  mkdir -p "$ST_LIB_DIR"
+  dir="$(mktemp -d "${ST_LIB_DIR}/sptest.XXXXXX" 2>/dev/null)" || dir=''
+  if [[ -z $dir ]]; then
+    log_error "Could not create a work directory for the test."
     return 1
   fi
-  printf '%sDownload speed:%s %s\n' "$C_OK" "$C_RESET" \
-    "$(awk -v s="$speed" 'BEGIN {printf "%.1f Mbit/s  (%.1f MB/s)", s * 8 / 1000000, s / 1048576}')"
-  log_info "HTTP download speed measured: ${speed} B/s."
+
+  # --- Download: N parallel streams, summed --------------------------------
+  printf '  %s%-9s%s measuring…' "$C_KEY" "Download" "$C_RESET"
+  dl="$(_st_cf_streams "$streams" "${base}/__down?bytes=${dl_each}" "$dir" dl speed_download)"
+  printf '\r  %s%-9s%s %s          \n' "$C_KEY" "Download" "$C_RESET" "$(_st_fmt_speed "$dl")"
+
+  # --- Upload: N parallel streams of a zero-filled payload, summed ---------
+  printf '  %s%-9s%s measuring…' "$C_KEY" "Upload" "$C_RESET"
+  head -c "$ul_bytes" /dev/zero >"${dir}/payload" 2>/dev/null
+  ul="$(_st_cf_streams "$streams" "${base}/__up" "$dir" ul speed_upload "${dir}/payload")"
+  printf '\r  %s%-9s%s %s          \n' "$C_KEY" "Upload" "$C_RESET" "$(_st_fmt_speed "$ul")"
+
+  rm -rf "$dir"
+
+  if ((dl == 0 && ul == 0)); then
+    log_error "Could not reach the Cloudflare speed servers — network blocked? See the log."
+    return 1
+  fi
+  printf '  %s%-9s%s %sCloudflare · %d parallel streams%s\n' \
+    "$C_MUTED" "via" "$C_RESET" "$C_MUTED" "$streams" "$C_RESET"
+  log_info "Bandwidth test: down=${dl}B/s up=${ul}B/s ping=${lat:-?}ms (cloudflare, ${streams} streams)."
   return 0
 }
 

@@ -6,6 +6,19 @@ this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [2.3.2] — 2026-07-24
 
+### Changed
+
+- **Real bandwidth test with a proper UI.** The old option relied on the
+  deprecated speedtest.net Python client (`speedtest-cli`) — and even offered
+  to install it — which breaks against Ookla's API and is frequently filtered
+  from Iran, so it "worked once, then stopped." The test is now a genuine
+  **download + upload + latency** measurement against Cloudflare's speed
+  endpoints (`speed.cloudflare.com`): four parallel streams for realistic
+  throughput, best-of-three TCP-connect latency, results shown live and
+  formatted (Mbit/s and MB/s). It needs only `curl`, works from Iran, and
+  never installs the fragile client. A genuine Ookla binary is still used when
+  it is already present.
+
 ### Fixed
 
 - **DNS now sticks on netplan/DHCP hosts.** On a systemd-networkd link the
@@ -50,15 +63,6 @@ this project adheres to [Semantic Versioning](https://semver.org/).
     pass.
   - The long **Network & VPN Tools** menu is grouped (Diagnose · Measure ·
     Network · System), and all submenus share one quiet input caret.
-
-### Fixed
-
-- **Bandwidth test now works from filtered networks.** The speedtest option
-  measured against a single Cloudflare URL, which is often throttled or
-  filtered from Iran — so it appeared to do nothing. It now prefers a real
-  client (Ookla/`speedtest-cli`), offers to install one, and otherwise falls
-  back to an HTTP download that tries several mirrors with robust numeric
-  parsing.
 
 ## [2.3.0] — 2026-07-24
 
