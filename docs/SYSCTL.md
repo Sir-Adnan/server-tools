@@ -133,6 +133,28 @@ Non-disruptive by design: every write above takes effect for new packets/pages
 without resetting the link, so it is safe to apply on a node already carrying
 users. That is also why `ethtool -G` ring resizing is excluded (below).
 
+## Optional — full IPv6 disable (`src/modules/ipv6.sh`)
+
+Opt-in only, from Tools → Network → IPv6 control; **never** part of the base or
+workload layers. It writes a *separate*, tracked drop-in
+(`/etc/sysctl.d/99-server-tools-ipv6.conf`) so it can be undone independently of
+the main tuning file:
+
+```ini
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+```
+
+`all.disable_ipv6` takes effect on every existing interface at once; `default`
+covers interfaces created later; `lo` completes the shutdown. The knob is left
+in place (not removed like GRUB's `ipv6.disable=1` would), so the base layer's
+IPv6 keys (`forwarding`, `accept_ra`) still apply cleanly without "cannot stat"
+errors. Guards: refuses on a host whose only default route is IPv6, and warns
+when the live SSH session is over IPv6 or a service listens on `[::]`.
+`ipv6_verify` reports drift in Doctor; Enable removes the drop-in and resets the
+three keys live.
+
 ## Deliberately NOT set
 
 | What | Why not |

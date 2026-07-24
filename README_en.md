@@ -5,7 +5,7 @@ built for high-traffic VPN infrastructure: Xray/Reality nodes (`marzban-node`,
 `pg-node`/Pasarguard, `marznode`), Marzban/Pasarguard panels, WireGuard, x-ui,
 and Hiddify — and for general-purpose tuning of any Linux server.
 
-> Stable release: **v2.3.4** · one file, no dependencies, run as root.
+> Stable release: **v2.4.0** · one file, no dependencies, run as root.
 > Version 1 is frozen under [`legacy/`](legacy/) and no longer updated.
 
 📖 **[Full 0-to-100 guide (Persian) ← docs/GUIDE.md](docs/GUIDE.md)**
@@ -52,7 +52,7 @@ Everything is idempotent — re-running is safe and converges to the same state.
 | **Inspect** | Full System Status · Doctor drift check (is it still in effect?) |
 | **Recover** | Roll back the last run, or restore the original pre-tool state |
 | **Secure** | UFW · fail2ban · SSH hardening · anti-abuse · node-API restriction |
-| **Tools** | Ping · **real speedtest (Ookla or HTTP)** · benchmark · MSS · **NOTRACK** · live view · APT mirror · report |
+| **Tools** | Ping · **speedtest with a server/location picker (Ookla or HTTP)** · benchmark · MSS · **NOTRACK** · **full IPv6 disable** · live view · APT mirror · report |
 | **Node & Docker** | Node config backup · official node installers · container file limits |
 
 ## ✨ Design principles

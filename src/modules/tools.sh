@@ -141,7 +141,236 @@ _st_cf_streams() {
   cat "${dir}/${prefix}"* 2>/dev/null | awk '{s += $1} END {printf "%.0f", s + 0}'
 }
 
-# tools_speedtest — a real, reliable bandwidth test. In order of preference:
+# --- Result rendering -------------------------------------------------------
+# Both back-ends (Ookla and the HTTP fallback) funnel their numbers through one
+# renderer, so a test looks identical wherever it came from and matches the rest
+# of the UI (ui_kv rows, palette colours, whitespace instead of rules).
+
+# _st_mbit BYTES_PER_SEC — short "938.5 Mbit/s" for the live status line.
+_st_mbit() {
+  awk -v b="${1:-0}" 'BEGIN { printf "%.1f Mbit/s", b * 8 / 1000000 }'
+}
+
+# _st_status TEXT — one in-place status line during a test (carriage return,
+# padded wide enough to overwrite a longer previous line).
+_st_status() {
+  printf '\r    %s%-48s%s' "$C_MUTED" "$1" "$C_RESET"
+}
+
+# _st_render_card SERVER ISP PING JITTER DL_BPS UL_BPS LOSS URL — the result
+# card. Empty fields are skipped, so it fits Ookla (full) and the HTTP fallback
+# (no jitter/loss/url) alike.
+_st_render_card() {
+  local server="$1" isp="$2" ping="$3" jit="$4" dl="$5" ul="$6" loss="$7" url="$8"
+  printf '\n'
+  [[ -n $server ]] && ui_kv "Server" "$server"
+  [[ -n $isp ]] && ui_kv "ISP" "$isp"
+  printf '\n'
+  if [[ -n $ping ]]; then
+    if [[ -n $jit ]]; then
+      ui_kv "Ping" "${ping} ms   (jitter ${jit} ms)"
+    else
+      ui_kv "Ping" "${ping} ms"
+    fi
+  fi
+  ui_kv "Download" "$(_st_fmt_speed "$dl")"
+  ui_kv "Upload" "$(_st_fmt_speed "$ul")"
+  [[ -n $loss ]] && ui_kv "Packet loss" "${loss} %"
+  if [[ -n $url ]]; then
+    printf '\n'
+    ui_kv "Result" "$url"
+  fi
+  printf '\n'
+  return 0
+}
+
+# --- Minimal JSON readers for the Ookla CLI's one-object-per-line output.
+# Flat, first-match, and ALWAYS successful (empty on no match) so a missing
+# field can never trip errexit inside the read loop below.
+_st_json_str() {
+  local m
+  m="$(grep -oE "\"$2\":\"[^\"]*\"" <<<"$1" | head -1)" || m=''
+  m="${m#*:\"}"
+  printf '%s' "${m%\"}"
+  return 0
+}
+
+_st_json_num() {
+  local m
+  m="$(grep -oE "\"$2\":[0-9]+(\.[0-9]+)?" <<<"$1" | head -1)" || m=''
+  printf '%s' "${m##*:}"
+  return 0
+}
+
+_st_json_pct() {
+  local p pct
+  p="$(_st_json_num "$1" progress)"
+  [[ $p =~ ^[0-9.]+$ ]] || p=0
+  pct="$(awk -v x="$p" 'BEGIN { printf "%d", x * 100 }')"
+  printf '%s' "$pct"
+  return 0
+}
+
+# _st_ookla_card RESULT_JSON — parse one Ookla "type:result" object (bandwidth
+# is bytes/s, same unit the card expects) and render it.
+_st_ookla_card() {
+  local json="$1" ping jit loss isp url server name loc country ping_obj srv_obj
+  local -a bws
+  ping_obj="${json#*\"ping\":\{}"
+  ping_obj="${ping_obj%%\}*}"
+  ping="$(_st_json_num "$ping_obj" latency)"
+  jit="$(_st_json_num "$ping_obj" jitter)"
+  # Exactly two "bandwidth" fields: download first, upload second.
+  mapfile -t bws < <(grep -oE '"bandwidth":[0-9]+' <<<"$json" | grep -oE '[0-9]+')
+  loss="$(_st_json_num "$json" packetLoss)"
+  isp="$(_st_json_str "$json" isp)"
+  url="$(grep -oE '"url":"[^"]*"' <<<"$json" | head -1)" || url=''
+  url="${url#*:\"}"
+  url="${url%\"}"
+  srv_obj="${json#*\"server\":\{}"
+  srv_obj="${srv_obj%%\}*}"
+  name="$(_st_json_str "$srv_obj" name)"
+  loc="$(_st_json_str "$srv_obj" location)"
+  country="$(_st_json_str "$srv_obj" country)"
+  server="$name"
+  [[ -n $loc ]] && server="${server:+${server} · }${loc}"
+  [[ -n $country ]] && server="${server:+${server}, }${country}"
+  _st_render_card "$server" "$isp" "$ping" "$jit" "${bws[0]:-0}" "${bws[1]:-0}" "$loss" "$url"
+  return 0
+}
+
+# --- Server selection -------------------------------------------------------
+# ST_SPEEDTEST_SERVER holds the chosen Ookla server id (empty = automatic).
+ST_SPEEDTEST_SERVER=''
+
+# _st_nearby BIN — "id|description" per nearby server, parsed from the stable
+# text of `-L`. Empty if none / unsupported.
+_st_nearby() {
+  "$1" -L --accept-license --accept-gdpr 2>/dev/null | awk '
+    /^=+$/ { seen = 1; next }
+    seen && $1 ~ /^[0-9]+$/ {
+      id = $1; $1 = ""; sub(/^ +/, ""); gsub(/ {2,}/, " ")
+      print id "|" $0
+    }' || true
+}
+
+# _st_pick_nearby BIN — list the closest servers and let the user choose one.
+_st_pick_nearby() {
+  local nearby line n=0 sel
+  local -a list
+  printf '  %sFinding nearby servers…%s\n' "$C_MUTED" "$C_RESET"
+  nearby="$(_st_nearby "$1")" || nearby=''
+  if [[ -z $nearby ]]; then
+    printf '  %sCould not list servers — using Automatic.%s\n' "$C_WARN" "$C_RESET"
+    ST_SPEEDTEST_SERVER=''
+    return 0
+  fi
+  mapfile -t list <<<"$nearby"
+  printf '\n'
+  for line in "${list[@]}"; do
+    ((n < 12)) || break
+    n=$((n + 1))
+    printf '    %s%2d%s  %s\n' "$C_KEY" "$n" "$C_RESET" "${line#*|}"
+  done
+  read -rp "  Server number [1-${n}, Enter = Automatic]: " sel ||
+    {
+      ST_SPEEDTEST_SERVER=''
+      return 0
+    }
+  if [[ $sel =~ ^[0-9]+$ ]] && ((sel >= 1 && sel <= n)); then
+    ST_SPEEDTEST_SERVER="${list[sel - 1]%%|*}"
+  else
+    ST_SPEEDTEST_SERVER=''
+  fi
+  return 0
+}
+
+# _st_pick_by_id — target any city/country by its speedtest.net server id.
+_st_pick_by_id() {
+  local id
+  printf '  %sEvery server page on speedtest.net shows its numeric ID. Any\n' "$C_MUTED"
+  printf '  city or country works — enter one to test that route.%s\n' "$C_RESET"
+  read -rp "  Server ID [Enter = Automatic]: " id ||
+    {
+      ST_SPEEDTEST_SERVER=''
+      return 0
+    }
+  if [[ $id =~ ^[0-9]+$ ]]; then
+    ST_SPEEDTEST_SERVER="$id"
+  else
+    [[ -n $id ]] && printf '  %sNot a numeric ID — using Automatic.%s\n' "$C_WARN" "$C_RESET"
+    ST_SPEEDTEST_SERVER=''
+  fi
+  return 0
+}
+
+# _st_choose_server BIN — sets ST_SPEEDTEST_SERVER. Returns 2 if cancelled.
+_st_choose_server() {
+  local bin="$1" choice
+  ST_SPEEDTEST_SERVER=''
+  printf '\n  %sTest server%s\n' "$C_ACCENT" "$C_RESET"
+  ui_menu_item 1 "Automatic" "nearest server · recommended"
+  ui_menu_item 2 "Choose nearby" "pick from the closest servers"
+  ui_menu_item 3 "By server ID" "any city worldwide (from speedtest.net)"
+  ui_menu_item 0 "Cancel"
+  read -rp "$(_ui_prompt)" choice || return 2
+  case "${choice:-1}" in
+    1 | '') return 0 ;;
+    2) _st_pick_nearby "$bin" ;;
+    3) _st_pick_by_id ;;
+    0) return 2 ;;
+    *) return 0 ;;
+  esac
+}
+
+# _st_run_ookla BIN — run Ookla in jsonl mode, animate a live status line from
+# its progress events, and render the result card. Honours ST_SPEEDTEST_SERVER.
+_st_run_ookla() {
+  local bin="$1" line type result='' lat bw ping_obj
+  local -a args=(--format=jsonl --accept-license --accept-gdpr)
+  [[ -n $ST_SPEEDTEST_SERVER ]] && args+=(-s "$ST_SPEEDTEST_SERVER")
+
+  printf '\n'
+  # Process substitution: a non-zero exit from the client just ends the loop
+  # (no pipefail/ERR-trap surprise) and leaves $result empty, handled below.
+  while IFS= read -r line; do
+    type="$(_st_json_str "$line" type)"
+    case "$type" in
+      ping)
+        lat="$(_st_json_num "$line" latency)"
+        _st_status "Latency · ${lat:-…} ms · $(_st_json_pct "$line")%"
+        ;;
+      download)
+        bw="$(_st_json_num "$line" bandwidth)"
+        _st_status "Download · $(_st_mbit "${bw:-0}") · $(_st_json_pct "$line")%"
+        ;;
+      upload)
+        bw="$(_st_json_num "$line" bandwidth)"
+        _st_status "Upload · $(_st_mbit "${bw:-0}") · $(_st_json_pct "$line")%"
+        ;;
+      result) result="$line" ;;
+    esac
+    # The client's own non-zero exit (e.g. a chosen server refused the test) is
+    # surfaced by the empty-$result check below; `|| true` keeps that failure
+    # from reaching the ERR trap from inside this process substitution.
+  done < <("$bin" "${args[@]}" 2>>"$ST_LOG_FILE" || true)
+  printf '\r%*s\r' 54 ''
+
+  if [[ -z $result ]]; then
+    log_warn "The Ookla speedtest returned no result (server unreachable?)."
+    printf '  %sNo result — the chosen server may be unavailable. Try Automatic.%s\n' \
+      "$C_WARN" "$C_RESET"
+    return 1
+  fi
+  _st_ookla_card "$result"
+  ping_obj="${result#*\"ping\":\{}"
+  ping_obj="${ping_obj%%\}*}"
+  log_info "Speedtest (Ookla): ping=$(_st_json_num "$ping_obj" latency)ms server=${ST_SPEEDTEST_SERVER:-auto}"
+  return 0
+}
+
+# tools_speedtest — a real, reliable bandwidth test with a premium, consistent
+# result card and a location picker. In order of preference:
 #   1. an Ookla binary already on the host (gold standard);
 #   2. the official Ookla CLI, fetched, run once and deleted (accurate, picks a
 #      nearby server, sidesteps Cloudflare 403s some hosts get);
@@ -150,65 +379,70 @@ _st_cf_streams() {
 # Ookla's API and is frequently filtered from Iran.
 tools_speedtest() {
   ui_section "Bandwidth test"
+  printf 'A real download / upload / latency test. It briefly uses bandwidth.\n'
 
-  # 1. A real Ookla binary already installed — the Python "speedtest-cli" (even
-  #    when it shadows the name) is excluded via the version check.
+  local bin='' fetched=''
   if has_cmd speedtest && speedtest --version 2>/dev/null | grep -qi 'ookla'; then
-    ui_confirm "Run the installed Ookla speedtest now? (uses bandwidth)" || return 2
-    speedtest --accept-license --accept-gdpr || log_warn "Ookla speedtest exited with an error."
-    return 0
-  fi
-
-  # 2. Fetch-and-run the official Ookla CLI (removed afterwards). Most accurate,
-  #    and immune to the Cloudflare 403 the HTTP path can hit.
-  if _st_ookla_arch >/dev/null 2>&1 && has_cmd tar && { has_cmd curl || has_cmd wget; }; then
-    printf 'The most accurate test uses the official %sOokla%s speedtest client —\n' "$C_KEY" "$C_RESET"
+    bin='speedtest'
+  elif _st_ookla_arch >/dev/null 2>&1 && has_cmd tar && { has_cmd curl || has_cmd wget; }; then
+    printf '\nThe most accurate test uses the official %sOokla%s client —\n' "$C_KEY" "$C_RESET"
     printf '%sdownloaded, run once, then deleted (nothing stays installed).%s\n' "$C_MUTED" "$C_RESET"
-    if ui_confirm "Download and run it now? (uses bandwidth)"; then
-      local odir
-      odir="$(_st_fetch_ookla)" || odir=''
-      if [[ -n $odir ]]; then
-        printf '\n'
-        "${odir}/speedtest" --accept-license --accept-gdpr || log_warn "Ookla speedtest exited with an error."
-        rm -rf "$odir"
-        return 0
+    if ui_confirm "Download and run it now?"; then
+      printf '  %sFetching the Ookla client…%s\n' "$C_MUTED" "$C_RESET"
+      fetched="$(_st_fetch_ookla)" || fetched=''
+      if [[ -n $fetched ]]; then
+        bin="${fetched}/speedtest"
+      else
+        log_warn "Could not fetch the Ookla client — using the built-in HTTP test instead."
       fi
-      log_warn "Could not fetch the Ookla client — using the built-in HTTP test instead."
     fi
   fi
 
-  # 3. Self-contained HTTP fallback.
+  if [[ -n $bin ]]; then
+    local rc=0
+    if _st_choose_server "$bin"; then
+      _st_run_ookla "$bin" || rc=$?
+    else
+      rc=2 # cancelled at the server picker
+    fi
+    [[ -n $fetched ]] && rm -rf "$fetched"
+    return "$rc"
+  fi
+
+  _st_http_test
+}
+
+# _st_http_test — dependency-light fallback when no Ookla client is available:
+# parallel HTTP streams to Cloudflare with mirror fallback, into the same card.
+_st_http_test() {
   if ! has_cmd curl; then
     log_error "curl is required for the built-in bandwidth test."
     return 1
   fi
   printf '\nBuilt-in %sdownload · upload · latency%s test (Cloudflare + mirrors).\n' "$C_KEY" "$C_RESET"
   ui_confirm "Run it now? (transfers up to ~500 MB)" || return 2
-  printf '\n'
 
   local base='https://speed.cloudflare.com' streams=4 ul_bytes=26214400
-  local dir lat dl ul src dl_host='n/a'
+  local dir lat dl=0 ul=0 src dl_host='n/a'
 
-  # --- Latency: best TCP-connect of three tiny requests --------------------
-  printf '  %s%-9s%s measuring…' "$C_KEY" "Latency" "$C_RESET"
+  printf '\n'
+  _st_status "Latency…"
   lat="$(for _ in 1 2 3; do
     curl -o /dev/null -s -A "$ST_HTTP_UA" -w '%{time_connect}\n' --max-time 5 "${base}/__down?bytes=0" 2>/dev/null
   done | awk 'NF && $1 + 0 > 0 {if (m == 0 || $1 < m) m = $1} END {if (m > 0) printf "%.1f", m * 1000}')"
-  printf '\r  %s%-9s%s %s ms            \n' "$C_KEY" "Latency" "$C_RESET" "${lat:-n/a}"
 
   mkdir -p "$ST_LIB_DIR"
   dir="$(mktemp -d "${ST_LIB_DIR}/sptest.XXXXXX" 2>/dev/null)" || dir=''
   if [[ -z $dir ]]; then
+    printf '\r%*s\r' 54 ''
     log_error "Could not create a work directory for the test."
     return 1
   fi
 
-  # --- Download: parallel streams, with mirror fallback. Cloudflare's __down
-  # caps the byte count at 1e8, and some networks throttle large inbound CDN
-  # transfers even when upload is fine — so we try Cloudflare, then mirrors,
-  # and keep the first source that actually moves bytes.
-  printf '  %s%-9s%s measuring…' "$C_KEY" "Download" "$C_RESET"
-  dl=0
+  # Cloudflare caps __down at 1e8 bytes and some networks throttle large inbound
+  # CDN transfers even when upload is fine, so we try Cloudflare then mirrors and
+  # keep the first source that actually moves bytes.
+  _st_status "Download…"
   for src in \
     "${base}/__down?bytes=100000000|Cloudflare" \
     'https://speed.hetzner.de/100MB.bin|Hetzner' \
@@ -219,23 +453,19 @@ tools_speedtest() {
       break
     fi
   done
-  printf '\r  %s%-9s%s %s          \n' "$C_KEY" "Download" "$C_RESET" "$(_st_fmt_speed "$dl")"
 
-  # --- Upload: N parallel streams of a zero-filled payload, summed ---------
-  printf '  %s%-9s%s measuring…' "$C_KEY" "Upload" "$C_RESET"
+  _st_status "Upload…"
   head -c "$ul_bytes" /dev/zero >"${dir}/payload" 2>/dev/null
   ul="$(_st_cf_streams "$streams" "${base}/__up" "$dir" ul speed_upload "${dir}/payload")"
-  printf '\r  %s%-9s%s %s          \n' "$C_KEY" "Upload" "$C_RESET" "$(_st_fmt_speed "$ul")"
-
   rm -rf "$dir"
+  printf '\r%*s\r' 54 ''
 
   if ((dl == 0 && ul == 0)); then
     log_error "Could not reach the Cloudflare speed servers — network blocked? See the log."
     return 1
   fi
-  printf '  %s%-9s%s %sdown: %s · up: Cloudflare · %d streams%s\n' \
-    "$C_MUTED" "via" "$C_RESET" "$C_MUTED" "$dl_host" "$streams" "$C_RESET"
-  log_info "Bandwidth test: down=${dl}B/s (${dl_host}) up=${ul}B/s ping=${lat:-?}ms (${streams} streams)."
+  _st_render_card "HTTP test · ${dl_host} · ${streams} streams" "" "${lat}" "" "$dl" "$ul" "" ""
+  log_info "Bandwidth test (HTTP): down=${dl}B/s (${dl_host}) up=${ul}B/s ping=${lat:-?}ms."
   return 0
 }
 
@@ -401,6 +631,7 @@ tools_menu() {
     ui_menu_group "Network"
     ui_menu_item 5 "MSS clamping" "fix 'connects but no sites'"
     ui_menu_item n "Conntrack NOTRACK" "exempt proxy ports (Xray/Reality)"
+    ui_menu_item i "IPv6 control" "disable/enable the IPv6 stack"
     ui_menu_item 6 "Docker + UFW audit" "check the firewall bypass"
     ui_menu_group "System"
     ui_menu_item 8 "XanMod kernel" "BBRv3 — replaces the kernel"
@@ -431,6 +662,10 @@ tools_menu() {
         ;;
       n | N)
         vpn_conntrack_bypass
+        ui_pause
+        ;;
+      i | I)
+        ipv6_control
         ui_pause
         ;;
       6)

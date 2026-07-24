@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.0] — 2026-07-24
+
+### Added
+
+- **Full IPv6 disable (Tools → Network → IPv6 control).** IPv6 can cause
+  connection races, DNS/route leaks or lag on some VPN setups. This switches the
+  whole IPv6 stack off on every interface via a tracked sysctl drop-in
+  (`disable_ipv6` on `all`/`default`/`lo`) — no reboot, no GRUB edit — and one
+  Enable (or a normal rollback) puts it back. It is opt-in only, never part of
+  Quick Optimize, and refuses to run on a host that reaches the network only
+  over IPv6; it also warns when the current SSH session is over IPv6 or when a
+  service listens on `[::]`. A matching `ipv6_verify` drift check joins Doctor.
+- **Speedtest location picker.** Beyond the default nearest server you can now
+  **choose a nearby server** from the live list or target **any city/country by
+  its speedtest.net server ID**, so you can measure the route to a specific
+  region — not just the closest one.
+
+### Changed
+
+- **Premium, unified speedtest UI.** Both back-ends (Ookla and the HTTP
+  fallback) now render one consistent result card — Server · ISP · Ping (with
+  jitter) · Download · Upload · Packet loss · Result URL — in the same style as
+  the rest of the tool. The Ookla path reads its `jsonl` stream to animate a
+  live latency/download/upload status line with a percentage, instead of a
+  blank wait.
+
 ## [2.3.4] — 2026-07-24
 
 ### Changed
