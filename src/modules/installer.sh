@@ -99,13 +99,11 @@ node_menu() {
     ui_logo
     ui_title "Node & Docker helpers"
     ui_kv "Detected" "$(detect_summary)"
-    ui_hr
     ui_menu_item 1 "Back up node config" "archive certificates and settings"
     ui_menu_item 2 "Install a node" "runs the official upstream installer"
     ui_menu_item 3 "Docker file limits" "raise nofile for all containers"
     ui_menu_item 0 "Back"
-    ui_hr
-    read -rp "Select: " choice || return 0
+    read -rp "$(_ui_prompt)" choice || return 0
     case "${choice:-}" in
       1)
         node_backup || true # outcome already reported

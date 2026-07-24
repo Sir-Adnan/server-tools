@@ -4,6 +4,36 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.1] — 2026-07-24
+
+### Changed
+
+- **Calmer, cleaner UI.** The 2.3.0 redesign was too busy — a full-width
+  separator bar under every menu group and a horizontal rule between every
+  status section made the screens feel boxed-in. Rewrote the layout to lean on
+  whitespace instead of lines:
+  - Menu groups are now lightweight coloured labels (no separator bars), with
+    blank-line spacing; the main menu is four calm groups (Optimize · Inspect ·
+    Manage · System).
+  - Menu rows are aligned and quieter: `1  Quick Optimize   hint` — no
+    brackets, arrows, or em-dashes.
+  - The **dashboard** is four compact lines (Host · Machine · Network ·
+    Workload) instead of two boxed sections.
+  - **System Status** drops the eight inter-section rules; sections are set off
+    by a `▍` accent bar and whitespace, so the whole report reads in one calm
+    pass.
+  - The long **Network & VPN Tools** menu is grouped (Diagnose · Measure ·
+    Network · System), and all submenus share one quiet input caret.
+
+### Fixed
+
+- **Bandwidth test now works from filtered networks.** The speedtest option
+  measured against a single Cloudflare URL, which is often throttled or
+  filtered from Iran — so it appeared to do nothing. It now prefers a real
+  client (Ookla/`speedtest-cli`), offers to install one, and otherwise falls
+  back to an HTTP download that tries several mirrors with robust numeric
+  parsing.
+
 ## [2.3.0] — 2026-07-24
 
 Inspired by a comparison with `jestivald/node-accelerator`: adopted its best

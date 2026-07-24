@@ -5,32 +5,28 @@
 # (public IP is fetched at most once per process, in utils.sh).
 # ============================================================================
 
+# _dash_row LABEL VALUE — one compact dashboard line (tight, no colon).
+_dash_row() {
+  printf '  %s%-9s%s %s\n' "$C_KEY" "$1" "$C_RESET" "$2"
+}
+
 menu_dashboard() {
   ui_logo
 
-  # Optimized state is a first-class signal: a returning user should see at a
-  # glance whether this host has been tuned, without reading a report.
-  local prof tier status
+  # Optimized state is a first-class signal: a returning user sees at a glance
+  # whether this host is tuned, without opening a report.
+  local prof status
   prof="$(config_get last_profile '')"
-  tier="$(config_get last_tier '-')"
   if [[ -n $prof ]]; then
-    status="$(ui_badge ok) optimized  ${C_MUTED}(profile ${prof} · tier ${tier})${C_RESET}"
+    status="$(ui_badge ok) optimized ${C_MUTED}· ${prof} · tier $(config_get last_tier '-')${C_RESET}"
   else
-    status="$(ui_badge idle) not optimized yet  ${C_MUTED}(start with Quick Optimize)${C_RESET}"
+    status="$(ui_badge idle) not optimized yet ${C_MUTED}· run Quick Optimize${C_RESET}"
   fi
 
-  ui_section "System"
-  ui_kv "Host" "$(hostname 2>/dev/null || printf 'unknown')"
-  ui_kv "OS" "$(os_pretty_name)"
-  ui_kv "Kernel" "$(kernel_release)"
-  ui_kv "Resources" "$(cpu_cores) vCPU · $(mem_total_mb) MB RAM · up $(uptime_pretty)"
-  printf '\n'
-  ui_section "Network & workload"
-  ui_kv "Public IPv4" "$(net_public_ip4)"
-  ui_kv "TCP stack" "cc=$(sysctl_get net.ipv4.tcp_congestion_control) · qdisc=$(sysctl_get net.core.default_qdisc)"
-  ui_kv "Detected" "$(detect_summary)"
-  ui_kv "Status" "$status"
-  ui_hr
+  _dash_row "Host" "$(hostname 2>/dev/null || printf 'unknown') · $(os_pretty_name) · $(kernel_release)"
+  _dash_row "Machine" "$(cpu_cores) vCPU · $(mem_total_mb) MB RAM · up $(uptime_pretty)"
+  _dash_row "Network" "$(net_public_ip4) · cc=$(sysctl_get net.ipv4.tcp_congestion_control) · $(sysctl_get net.core.default_qdisc)"
+  _dash_row "Workload" "$(detect_summary) · ${status}"
 }
 
 menu_rollback() {
@@ -46,11 +42,10 @@ menu_rollback() {
   printf 'Latest recorded run: %s%s%s · %s change(s) recorded in total\n' \
     "$C_ACCENT" "$run" "$C_RESET" "$(manifest_entry_count)"
   ui_hr
-  ui_menu_item 1 "Undo the last run" "restore files that run changed, remove what it created"
-  ui_menu_item 2 "Restore original state" "everything back to before ServerTools ever ran"
+  ui_menu_item 1 "Undo the last run" "restore changed files, remove created ones"
+  ui_menu_item 2 "Restore original state" "back to before ServerTools ever ran"
   ui_menu_item 0 "Back"
-  ui_hr
-  read -rp "Select: " choice || return 0
+  read -rp "$(_ui_prompt)" choice || return 0
   case "${choice:-}" in
     1) ui_confirm "Revert all changes from run ${run}?" && rollback_latest ;;
     2)
@@ -74,11 +69,10 @@ menu_settings() {
     ui_kv "Recorded changes" "$(manifest_entry_count)"
     ui_kv "Saved profile" "$(config_get last_profile 'none yet') / tier $(config_get last_tier '-')"
     ui_hr
-    ui_menu_item 1 "Install 'st' command" "run 'st' instead of the long one-liner"
+    ui_menu_item 1 "Install 'st' command" "run 'st' instead of the one-liner"
     ui_menu_item 2 "Check for updates" "self-update from the latest release"
     ui_menu_item 0 "Back"
-    ui_hr
-    read -rp "Select: " choice || return 0
+    read -rp "$(_ui_prompt)" choice || return 0
     case "${choice:-}" in
       1)
         st_self_install || log_warn "Install did not complete."
@@ -102,26 +96,25 @@ main_menu() {
   local choice
   while true; do
     menu_dashboard
+    ui_hr
     ui_menu_group "Optimize"
-    ui_menu_item 1 "Quick Optimize" "full auto-tune, recommended — safe to re-run"
-    ui_menu_item 2 "Custom Optimize" "pick profile and modules manually"
+    ui_menu_item 1 "Quick Optimize" "auto-tune everything · recommended"
+    ui_menu_item 2 "Custom Optimize" "choose profile and modules"
     ui_menu_group "Inspect"
     ui_menu_item 3 "System Status" "full live report"
-    ui_menu_item 4 "Doctor" "drift check — is everything still in effect?"
-    ui_menu_group "Recover"
-    ui_menu_item 5 "Rollback" "undo changes — restore to before ServerTools"
-    ui_menu_group "Secure"
-    ui_menu_item 6 "Security" "UFW · fail2ban · SSH · anti-abuse (optional)"
-    ui_menu_group "Tools"
-    ui_menu_item 7 "Network & VPN tools" "ping · speed · MSS · NOTRACK · live view"
-    ui_menu_item 8 "Node & Docker" "config backup · installers · container limits"
-    ui_menu_group "Maintain"
-    ui_menu_item 9 "Settings" "install 'st' command · self-update · paths"
+    ui_menu_item 4 "Doctor" "drift check — still in effect?"
+    ui_menu_group "Manage"
+    ui_menu_item 5 "Rollback" "undo changes safely"
+    ui_menu_item 6 "Security" "UFW · fail2ban · SSH"
+    ui_menu_item 7 "Network & VPN Tools" "ping · speed · MSS · NOTRACK"
+    ui_menu_item 8 "Node & Docker" "backups · installers · limits"
+    ui_menu_group "System"
+    ui_menu_item 9 "Settings" "install · update · paths"
     ui_menu_item 0 "Exit"
-    ui_hr
-    ui_hint "New here? Choose 1 — it detects your workload and tunes everything safely."
+    printf '\n'
+    ui_hint "New here? Press 1 — it detects your workload and tunes it safely."
     # EOF (e.g. closed stdin) simply exits the menu.
-    read -rp "$(_ui_glyph '❯' '>') Select an option: " choice || {
+    read -rp "$(_ui_prompt)" choice || {
       printf '\n'
       return 0
     }

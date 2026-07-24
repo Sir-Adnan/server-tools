@@ -49,28 +49,26 @@ ui_center() {
 }
 
 ui_title() {
-  ui_hr
   ui_center "$1" "$C_TITLE"
   ui_hr
 }
 
-# ui_section TITLE — a titled sub-heading (▸ Title).
+# ui_section TITLE — a calm heading: an accent bar + label, with a blank line
+# above for air. Deliberately NO full-width rule — sections are separated by
+# whitespace, which keeps long screens uncluttered instead of "boxed in".
 ui_section() {
-  printf '%s%s %s%s\n' "$C_TITLE" "$(_ui_glyph '▸' '#')" "$1" "$C_RESET"
+  printf '\n  %s%s %s%s\n' "$C_TITLE" "$(_ui_glyph '▍' '|')" "$1" "$C_RESET"
 }
 
-# ui_menu_group TITLE — a titled separator that groups related menu items.
+# ui_menu_group TITLE — a lightweight category label above a set of menu items.
+# Just a coloured word and a blank line; no separator bars (they read as noise).
 ui_menu_group() {
-  local title="$1" ch='-' width text rest
-  ((ST_UTF8)) && ch='─'
-  width="$(ui_width)"
-  text=" ${title} "
-  rest=$((width - 2 - ${#text}))
-  ((rest < 0)) && rest=0
-  printf '\n%s%s%s%s%s%s%s\n' \
-    "$C_LINE" "$(ui_repeat "$ch" 2)" \
-    "$C_ACCENT" "$text" \
-    "$C_LINE" "$(ui_repeat "$ch" "$rest")" "$C_RESET"
+  printf '\n  %s%s%s\n' "$C_ACCENT" "$1" "$C_RESET"
+}
+
+# _ui_prompt — the input caret shared by the menus (calm, unlabelled).
+_ui_prompt() {
+  printf '\n  %s%s%s ' "$C_ACCENT" "$(_ui_glyph '❯' '>')" "$C_RESET"
 }
 
 # ui_badge STATE — a colored status glyph. STATE: ok | warn | err | idle.
@@ -88,22 +86,21 @@ ui_hint() {
   printf ' %s%s %s%s\n' "$C_MUTED" "$(_ui_glyph 'ℹ' 'i')" "$1" "$C_RESET"
 }
 
-# ui_kv KEY VALUE — colored label, plain value.
+# ui_kv KEY VALUE — aligned row: coloured label, plain value, nested under a
+# section (indent 4). No colon — the alignment already reads as a label.
 ui_kv() {
-  printf '  %s%-21s%s %s\n' "$C_KEY" "$1:" "$C_RESET" "$2"
+  printf '    %s%-19s%s %s\n' "$C_KEY" "$1" "$C_RESET" "$2"
 }
 
-# ui_menu_item KEY LABEL [HINT] — a selectable row: ❯ [key] Label — hint.
+# ui_menu_item KEY LABEL [HINT] — one clean, aligned selectable row:
+#     1  Quick Optimize        auto-tune everything · recommended
 ui_menu_item() {
-  local key="$1" label="$2" hint="${3:-}" arrow
-  arrow="$(_ui_glyph '❯' '>')"
+  local key="$1" label="$2" hint="${3:-}"
   if [[ -n $hint ]]; then
-    printf '  %s%s%s %s[%s]%s %-22s %s%s %s%s\n' \
-      "$C_ACCENT" "$arrow" "$C_RESET" "$C_KEY" "$key" "$C_RESET" \
-      "$label" "$C_MUTED" "$(_ui_glyph '—' '-')" "$hint" "$C_RESET"
+    printf '    %s%s%s  %-22s %s%s%s\n' \
+      "$C_KEY" "$key" "$C_RESET" "$label" "$C_MUTED" "$hint" "$C_RESET"
   else
-    printf '  %s%s%s %s[%s]%s %s\n' \
-      "$C_ACCENT" "$arrow" "$C_RESET" "$C_KEY" "$key" "$C_RESET" "$label"
+    printf '    %s%s%s  %s\n' "$C_KEY" "$key" "$C_RESET" "$label"
   fi
 }
 

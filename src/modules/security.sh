@@ -353,8 +353,7 @@ security_menu() {
     ui_menu_item 4 "Anti-abuse egress" "block SMTP/worm ports and provider networks"
     ui_menu_item 5 "Restrict node API" "panel-only access to 62050/62051"
     ui_menu_item 0 "Back"
-    ui_hr
-    read -rp "Select: " choice || return 0
+    read -rp "$(_ui_prompt)" choice || return 0
     case "${choice:-}" in
       1)
         security_ufw

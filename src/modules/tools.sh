@@ -65,37 +65,67 @@ tools_listening_ports() {
 # tools_speedtest — bandwidth check. Uses a real speedtest client when the
 # host already has one; otherwise a plain HTTP download, which needs nothing
 # but curl. Both consume traffic, so both ask first.
+# tools_speedtest — measure bandwidth with whatever is available. A real
+# client is preferred; otherwise an HTTP download that tries several mirrors,
+# because a single CDN (Cloudflare) is often throttled or filtered from Iran —
+# the reason the previous single-URL version "did nothing" for some users.
 tools_speedtest() {
   ui_section "Bandwidth test"
+
   if has_cmd speedtest; then
-    ui_confirm "Run speedtest (uses bandwidth)?" || return 2
-    speedtest || log_warn "speedtest exited with an error."
+    ui_confirm "Run Ookla speedtest now? (uses bandwidth)" || return 2
+    speedtest --accept-license --accept-gdpr 2>>"$ST_LOG_FILE" ||
+      speedtest 2>>"$ST_LOG_FILE" ||
+      log_warn "speedtest exited with an error — see the log."
     return 0
   fi
   if has_cmd speedtest-cli; then
-    ui_confirm "Run speedtest-cli (uses bandwidth)?" || return 2
-    speedtest-cli --simple || log_warn "speedtest-cli exited with an error."
+    ui_confirm "Run speedtest-cli now? (uses bandwidth)" || return 2
+    speedtest-cli --simple 2>>"$ST_LOG_FILE" ||
+      log_warn "speedtest-cli exited with an error — see the log."
     return 0
   fi
 
-  if ! has_cmd curl; then
-    printf 'Neither a speedtest client nor curl is available.\n'
-    return 2
+  printf 'No speedtest client is installed on this server.\n'
+  if has_cmd apt-get && ui_confirm "Install speedtest-cli now? (small, from the distro repo)"; then
+    if pkg_install speedtest-cli && has_cmd speedtest-cli; then
+      speedtest-cli --simple 2>>"$ST_LOG_FILE" || log_warn "speedtest-cli exited with an error."
+      return 0
+    fi
+    log_warn "Install did not complete — falling back to an HTTP download test."
   fi
-  printf 'No speedtest client installed — measuring a 100 MB HTTP download\n'
-  printf 'instead (nothing gets installed).\n'
-  ui_confirm "Download 100 MB now?" || return 2
 
-  local speed
-  speed="$(curl -o /dev/null -fsS --max-time 60 -w '%{speed_download}' \
-    'https://speed.cloudflare.com/__down?bytes=104857600' 2>>"$ST_LOG_FILE")" || speed=''
-  if [[ -z $speed || $speed == 0* ]]; then
-    log_error "Download test failed — see the log."
+  if ! has_cmd curl; then
+    log_error "curl is missing — cannot run the HTTP fallback test."
     return 1
   fi
-  printf '%sDownload:%s %s\n' "$C_OK" "$C_RESET" \
-    "$(awk -v s="$speed" 'BEGIN {printf "%.1f Mbit/s (%.1f MB/s)", s * 8 / 1000000, s / 1048576}')"
-  log_info "Download speed measured: ${speed} B/s."
+  printf 'Measuring throughput via HTTP download (several mirrors are tried).\n'
+  ui_confirm "Download ~100 MB now?" || return 2
+
+  local url host speed=''
+  for url in \
+    'https://speed.cloudflare.com/__down?bytes=104857600' \
+    'https://speed.hetzner.de/100MB.bin' \
+    'http://ipv4.download.thinkbroadband.com/100MB.zip'; do
+    host="${url#*://}"
+    host="${host%%/*}"
+    printf '  %-32s ' "${host} ..."
+    speed="$(curl -o /dev/null -fsS --max-time 60 -w '%{speed_download}' "$url" 2>>"$ST_LOG_FILE")" || speed=''
+    if [[ -n $speed ]] && awk -v s="$speed" 'BEGIN { exit !(s + 0 > 0) }'; then
+      printf '%sok%s\n' "$C_OK" "$C_RESET"
+      break
+    fi
+    printf '%sunreachable%s\n' "$C_MUTED" "$C_RESET"
+    speed=''
+  done
+
+  if [[ -z $speed ]]; then
+    log_error "All download mirrors failed or were unreachable — see the log."
+    return 1
+  fi
+  printf '%sDownload speed:%s %s\n' "$C_OK" "$C_RESET" \
+    "$(awk -v s="$speed" 'BEGIN {printf "%.1f Mbit/s  (%.1f MB/s)", s * 8 / 1000000, s / 1048576}')"
+  log_info "HTTP download speed measured: ${speed} B/s."
   return 0
 }
 
@@ -229,22 +259,25 @@ tools_menu() {
   while true; do
     ui_logo
     ui_title "Network & VPN Tools"
-    ui_menu_item 1 "Ping matrix" "latency/loss to Iran + global targets"
-    ui_menu_item 2 "DNS latency test" "ping every DNS provider"
-    ui_menu_item 3 "TCP/conntrack status" "BBR, forwarding, table usage"
-    ui_menu_item 4 "Listening ports" "ss -tulnp snapshot"
-    ui_menu_item 5 "MSS clamping" "fix 'VPN connects but no sites' (WireGuard/NAT)"
-    ui_menu_item n "Conntrack NOTRACK" "exempt proxy ports from tracking (Xray/Reality)"
-    ui_menu_item 6 "Docker+UFW audit" "check the firewall bypass"
-    ui_menu_item 7 "Support report" "full plain-text dump for issues/tickets"
-    ui_menu_item 8 "XanMod kernel (BBRv3)" "ADVANCED — replaces the kernel"
-    ui_menu_item 9 "Bandwidth test" "speedtest client or plain HTTP download"
-    ui_menu_item b "Quick benchmark" "CPU and disk, no dependencies"
-    ui_menu_item w "Live view" "conntrack, sockets and traffic under load"
-    ui_menu_item m "APT mirror" "switch to an Iranian mirror (or revert)"
+    ui_menu_group "Diagnose"
+    ui_menu_item 1 "Ping matrix" "latency to Iran + global"
+    ui_menu_item 2 "DNS latency" "ping every DNS provider"
+    ui_menu_item 3 "TCP / conntrack" "BBR · forwarding · table usage"
+    ui_menu_item 4 "Listening ports" "ss snapshot"
+    ui_menu_group "Measure"
+    ui_menu_item 9 "Bandwidth test" "speedtest or HTTP download"
+    ui_menu_item b "Quick benchmark" "CPU and disk"
+    ui_menu_item w "Live view" "traffic · sockets · conntrack"
+    ui_menu_group "Network"
+    ui_menu_item 5 "MSS clamping" "fix 'connects but no sites'"
+    ui_menu_item n "Conntrack NOTRACK" "exempt proxy ports (Xray/Reality)"
+    ui_menu_item 6 "Docker + UFW audit" "check the firewall bypass"
+    ui_menu_group "System"
+    ui_menu_item 8 "XanMod kernel" "BBRv3 — replaces the kernel"
+    ui_menu_item m "APT mirror" "switch to an Iranian mirror"
+    ui_menu_item 7 "Support report" "full plain-text dump"
     ui_menu_item 0 "Back"
-    ui_hr
-    read -rp "Select: " choice || return 0
+    read -rp "$(_ui_prompt)" choice || return 0
     case "${choice:-}" in
       1)
         tools_ping_matrix

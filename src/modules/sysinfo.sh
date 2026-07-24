@@ -225,25 +225,16 @@ show_status() {
   ui_title "System Status"
 
   _status_system
-  ui_hr
   _status_cpu
-  ui_hr
   _status_memory
-  ui_hr
   _status_network
-  ui_hr
   _status_dns
-  ui_hr
   _status_tuning
-  ui_hr
   _status_limits
-  ui_hr
   _status_security
-  ui_hr
   _status_servertools
-  ui_hr_heavy
-  printf '%sTip: "st --dry-run" shows which kernel keys still differ from the\n' "$C_MUTED"
-  printf 'recommended profile; "st --report" writes all of this to a file.%s\n' "$C_RESET"
 
+  printf '\n'
+  ui_hint "\"st --dry-run\" shows which kernel keys still differ · \"st --report\" saves this to a file."
   ui_pause
 }
