@@ -20,7 +20,7 @@ if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); 
 fi
 
 readonly ST_NAME="ServerTools"
-readonly ST_VERSION="2.3.2"
+readonly ST_VERSION="2.3.3"
 readonly ST_REPO_URL="https://github.com/Sir-Adnan/server-tools"
 
 # Filesystem layout (FHS): config in /etc, state and backups in /var/lib,
