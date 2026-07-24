@@ -191,6 +191,12 @@ main() {
       ;;
   esac
 
+  # The work is done; from here we only report and return the computed status.
+  # ST_EXIT_CODE deliberately carries 1 (a step failed) or 3 (warning/drift),
+  # so the ERR trap must be cleared first — otherwise this very `return` looks
+  # to it like an unhandled failure and prints a spurious ERROR on every run
+  # that ends in a warning (which is almost every real run).
+  trap - ERR
   log_info "${ST_NAME} finished (run ${ST_RUN_ID}, exit=${ST_EXIT_CODE})"
   return "$ST_EXIT_CODE"
 }

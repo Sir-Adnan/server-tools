@@ -168,15 +168,32 @@ _notrack_wireguard_ports() {
   awk 'NF {print $NF}' <<<"$out" | grep -E '^[0-9]+$' | sort -un
 }
 
-# _notrack_candidates SSH_PORT WG_PORTS — listening TCP ports worth exempting:
-# everything with a listener, minus SSH and WireGuard.
+# _notrack_dnat_ports — host ports that a DNAT/REDIRECT rule forwards (Docker
+# `-p`, manual port-forwards). NOTRACK skips the nat table, so exempting one of
+# these silently breaks its forwarding — fatal with docker userland-proxy off.
+_notrack_dnat_ports() {
+  has_cmd iptables || return 0
+  local out out6=''
+  out="$(iptables -t nat -S 2>/dev/null)" || out=''
+  if has_cmd ip6tables; then
+    out6="$(ip6tables -t nat -S 2>/dev/null)" || out6=''
+  fi
+  printf '%s\n%s\n' "$out" "$out6" |
+    grep -E -- '-j (DNAT|REDIRECT)' |
+    grep -oE -- '--dport [0-9]+' |
+    awk '{print $2}' | sort -un
+}
+
+# _notrack_candidates SSH WG DNAT — listening TCP ports worth exempting:
+# everything with a listener, minus the ports that must keep conntrack
+# (SSH, WireGuard, and any DNAT/Docker-forwarded port).
 _notrack_candidates() {
   has_cmd ss || return 0
-  local ssh="$1" wg="$2" excl listeners
-  excl="$(printf '%s\n%s\n' "$ssh" "$wg" | grep -E '^[0-9]+$' | sort -un)"
+  local excl listeners
+  excl="$(printf '%s\n%s\n%s\n' "$1" "$2" "$3" | grep -E '^[0-9]+$' | sort -un)"
   listeners="$(ss -tln 2>/dev/null)" || return 0
   awk 'NR > 1 { p = $4; sub(/.*:/, "", p); if (p ~ /^[0-9]+$/) print p }' <<<"$listeners" |
-    sort -un | comm -23 - <(printf '%s\n' "$excl") | paste -sd, -
+    sort -un | _ports_subtract "$excl" | paste -sd, -
 }
 
 # _notrack_sanitize LIST — keep valid 1..65535 ports, dedup, comma-join.
@@ -187,6 +204,14 @@ _notrack_sanitize() {
   done
   ((${#out[@]})) || return 0
   printf '%s\n' "${out[@]}" | sort -un | paste -sd, -
+}
+
+# _notrack_drop_ports LIST DROP — LIST minus DROP (either comma- or newline-
+# separated), dedup, comma-join. Empty output is a valid result.
+_notrack_drop_ports() {
+  local drop
+  drop="$(tr ',' '\n' <<<"$2" | grep -E '^[0-9]+$' | sort -un)"
+  tr ',' '\n' <<<"$1" | grep -E '^[0-9]+$' | sort -un | _ports_subtract "$drop" | paste -sd, -
 }
 
 # _notrack_apply_live PORTS... — add the rules idempotently to IPv4 (+IPv6).
@@ -265,18 +290,24 @@ vpn_conntrack_bypass() {
     return 0
   fi
 
-  local ssh_port wg_ports suggested
+  local ssh_port wg_ports dnat_ports suggested
   ssh_port="$(detect_ssh_port)" || ssh_port=22
   wg_ports="$(_notrack_wireguard_ports)" || wg_ports=''
-  suggested="$(_notrack_candidates "$ssh_port" "$wg_ports")" || suggested=''
+  dnat_ports="$(_notrack_dnat_ports)" || dnat_ports=''
+  suggested="$(_notrack_candidates "$ssh_port" "$wg_ports" "$dnat_ports")" || suggested=''
 
   if [[ -n $wg_ports ]]; then
     printf '%sWireGuard detected%s on port(s) %s — excluded (NAT needs conntrack).\n' \
       "$C_KEY" "$C_RESET" "$(paste -sd, - <<<"$wg_ports")"
   fi
+  if [[ -n $dnat_ports ]]; then
+    printf '%sDocker/DNAT-forwarded port(s)%s %s — excluded: NOTRACK skips the nat\n' \
+      "$C_KEY" "$C_RESET" "$(paste -sd, - <<<"$dnat_ports")"
+    printf 'table, which would break their port forwarding.\n'
+  fi
   if [[ -z $suggested ]]; then
     printf 'No proxy data ports were detected to exempt (nothing is listening\n'
-    printf 'outside SSH/WireGuard). Nothing to do.\n'
+    printf 'outside SSH/WireGuard/Docker). Nothing to do.\n'
     return 0
   fi
   printf '%sDetected proxy port(s):%s %s\n\n' "$C_KEY" "$C_RESET" "$suggested"
@@ -284,6 +315,17 @@ vpn_conntrack_bypass() {
   local answer ports
   read -rp "Ports to exempt [Enter=detected, space/comma separated]: " answer || return 0
   ports="$(_notrack_sanitize "${answer:-$suggested}")" || ports=''
+  # Hard rule, even against manual input: a DNAT-forwarded port must never be
+  # NOTRACK'd (it would break forwarding), so drop any that slipped in.
+  if [[ -n $ports && -n $dnat_ports ]]; then
+    local kept
+    kept="$(_notrack_drop_ports "$ports" "$dnat_ports")"
+    if [[ $kept != "$ports" ]]; then
+      printf '%sRemoved Docker/DNAT port(s)%s from the selection — NOTRACK would break their forwarding.\n' \
+        "$C_WARN" "$C_RESET"
+      ports="$kept"
+    fi
+  fi
   if [[ -z $ports ]]; then
     printf 'No valid ports given — nothing to do.\n'
     return 0

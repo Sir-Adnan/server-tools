@@ -42,6 +42,38 @@ complete, and reworked the UI.
   All glyphs degrade to ASCII on non-UTF-8/`NO_COLOR`/dumb terminals.
 - New `log_note` helper for informational, step-buffered asides.
 
+### Fixed
+
+- **The ERR trap fired on the deliberate final `return`.** `main` returns
+  `ST_EXIT_CODE`, which is 1 (a step failed) or 3 (warning/drift) by design —
+  but the ERR trap was never cleared, so *every* run that ended in a warning
+  printed a spurious `unhandled failure (exit=3) … return "$ST_EXIT_CODE"` to
+  stderr and logged it as ERROR. The trap is now cleared right before the
+  report-and-return tail. (Present since the exit-code contract was added.)
+- **The perf step could abort Quick Optimize on a read-only `/sys`.**
+  `_perf_plan` ended on a `for`/guard whose false result leaked into the bare
+  `plan="$(_perf_plan …)"` capture — the same class the 2.2.0 notes described.
+  On unprivileged-LXC VPS (read-only `/sys`) every writability test is false,
+  so the helper returned non-zero and, with perf now default in Quick
+  Optimize, took the whole run down. It now returns success explicitly and the
+  empty plan simply skips the step.
+- **The perf step reported OK when `systemctl daemon-reload` failed.** A failed
+  reload now escalates the step to WARN instead of hiding behind a note
+  (golden rule 4).
+- **NOTRACK could break Docker/DNAT-forwarded ports.** A NOTRACK'd port skips
+  the `nat` table, so exempting a Docker-published (`-p`) port silently broke
+  its forwarding — fatally with `userland-proxy: false`. DNAT/REDIRECT target
+  ports are now read from the live `nat` table, excluded from the suggestion,
+  and hard-dropped even if entered manually.
+- **Port set math used `comm` on numerically-sorted input.** `comm` needs
+  *byte*-sorted input, but ports are sorted numerically, so lists mixing
+  different digit-lengths (e.g. `8443` vs `51820`) produced wrong results and
+  "not in sorted order" noise. Replaced with collation-safe `_ports_intersect`
+  / `_ports_subtract` awk helpers — fixes NOTRACK candidate selection and the
+  reserved-ports UDP intersection introduced in 2.1.2.
+- **`marznode` was not detected.** Gozargah renamed marzban-node to `marznode`;
+  detection and the post-optimize restart prompt now match both.
+
 ### Comparison notes (deliberately NOT adopted)
 
 - `ethtool -G` ring/coalesce tuning — can reset the link and harms latency on

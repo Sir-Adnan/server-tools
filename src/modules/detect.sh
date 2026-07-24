@@ -36,11 +36,12 @@ detect_stack() {
     containers="${containers}${containers:+$'\n'}${podman_ps}"
   fi
 
-  # Nodes first — "marzban" alone must not swallow "marzban-node".
-  _detect_match "$containers" 'marzban[-_]node' && _detect_add 'marzban-node'
+  # Nodes first — "marzban" alone must not swallow the node. Gozargah's node
+  # ships both as "marzban-node" and, since the rename, plain "marznode".
+  _detect_match "$containers" 'marzban[-_]node|marznode' && _detect_add 'marzban-node'
   _detect_match "$containers" 'pg[-_]node|pasarguard' && _detect_add 'pg-node'
   if _detect_match "$containers" 'marzban|marzneshin' &&
-    ! _detect_match "$containers" 'marzban[-_]node'; then
+    ! _detect_match "$containers" 'marzban[-_]node|marznode'; then
     _detect_add 'marzban-panel'
   fi
   _detect_match "$containers" 'hiddify' && _detect_add 'hiddify'

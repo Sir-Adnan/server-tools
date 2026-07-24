@@ -493,6 +493,25 @@ _ss_ports_in_range() {
       }' <<<"$1" | sort -un
 }
 
+# _ports_intersect SET  / _ports_subtract SET — read candidate ports (one per
+# line) from stdin; print those that ARE (intersect) / are NOT (subtract) in
+# SET, a newline-separated list passed as the argument. These replace `comm`,
+# which needs its inputs in *byte* order while our ports are in *numeric* order
+# ("8443" sorts before "51820" numerically but after it bytewise) — feeding
+# comm numeric-sorted input yields wrong results. An empty SET is handled
+# correctly (intersect → nothing, subtract → everything).
+_ports_intersect() {
+  awk -v set="$1" '
+    BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
+    ($1 in m)'
+}
+
+_ports_subtract() {
+  awk -v set="$1" '
+    BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
+    !($1 in m)'
+}
+
 # listening_service_ports — ports of REAL services inside the ephemeral
 # range (10240-65535), one per line.
 #
@@ -509,7 +528,9 @@ listening_service_ports() {
   udp2="$(ss -uln 2>/dev/null)" || udp2=''
   {
     _ss_ports_in_range "$tcp"
-    comm -12 <(_ss_ports_in_range "$udp1") <(_ss_ports_in_range "$udp2")
+    # UDP ports present in BOTH samples — stable services, not a proxy's
+    # transient outbound sockets that show up for only one of the two probes.
+    _ss_ports_in_range "$udp2" | _ports_intersect "$(_ss_ports_in_range "$udp1")"
   } | sort -un
 }
 
@@ -898,11 +919,12 @@ detect_stack() {
     containers="${containers}${containers:+$'\n'}${podman_ps}"
   fi
 
-  # Nodes first — "marzban" alone must not swallow "marzban-node".
-  _detect_match "$containers" 'marzban[-_]node' && _detect_add 'marzban-node'
+  # Nodes first — "marzban" alone must not swallow the node. Gozargah's node
+  # ships both as "marzban-node" and, since the rename, plain "marznode".
+  _detect_match "$containers" 'marzban[-_]node|marznode' && _detect_add 'marzban-node'
   _detect_match "$containers" 'pg[-_]node|pasarguard' && _detect_add 'pg-node'
   if _detect_match "$containers" 'marzban|marzneshin' &&
-    ! _detect_match "$containers" 'marzban[-_]node'; then
+    ! _detect_match "$containers" 'marzban[-_]node|marznode'; then
     _detect_add 'marzban-panel'
   fi
   _detect_match "$containers" 'hiddify' && _detect_add 'hiddify'
@@ -2573,6 +2595,11 @@ _perf_plan() {
       [[ -w $q/xps_cpus ]] && printf '%s\t%s\n' "$q/xps_cpus" "$mask"
     done
   fi
+  # Value-producing helper: never leak the exit status of a trailing loop/guard
+  # into the bare `plan="$(_perf_plan …)"` capture under errexit. On a host with
+  # a read-only /sys (unprivileged LXC) every -w test above is false and the
+  # plan is simply empty — the caller then skips the step cleanly.
+  return 0
 }
 
 # _perf_write_boot PLAN — a self-contained, idempotent boot script (each write
@@ -2637,7 +2664,10 @@ perf_apply() {
   local rc=0
   if [[ -d /etc/systemd/system ]] && has_cmd systemctl; then
     _perf_write_boot "$plan"
-    systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
+    if ! systemctl daemon-reload 2>>"$ST_LOG_FILE"; then
+      log_warn "systemd daemon-reload failed — the unit is written but not loaded (needs a manual reload or reboot)."
+      rc=3
+    fi
     if systemctl enable server-tools-perf.service >/dev/null 2>>"$ST_LOG_FILE"; then
       manifest_add unit server-tools-perf.service
     else
@@ -3249,15 +3279,32 @@ _notrack_wireguard_ports() {
   awk 'NF {print $NF}' <<<"$out" | grep -E '^[0-9]+$' | sort -un
 }
 
-# _notrack_candidates SSH_PORT WG_PORTS — listening TCP ports worth exempting:
-# everything with a listener, minus SSH and WireGuard.
+# _notrack_dnat_ports — host ports that a DNAT/REDIRECT rule forwards (Docker
+# `-p`, manual port-forwards). NOTRACK skips the nat table, so exempting one of
+# these silently breaks its forwarding — fatal with docker userland-proxy off.
+_notrack_dnat_ports() {
+  has_cmd iptables || return 0
+  local out out6=''
+  out="$(iptables -t nat -S 2>/dev/null)" || out=''
+  if has_cmd ip6tables; then
+    out6="$(ip6tables -t nat -S 2>/dev/null)" || out6=''
+  fi
+  printf '%s\n%s\n' "$out" "$out6" |
+    grep -E -- '-j (DNAT|REDIRECT)' |
+    grep -oE -- '--dport [0-9]+' |
+    awk '{print $2}' | sort -un
+}
+
+# _notrack_candidates SSH WG DNAT — listening TCP ports worth exempting:
+# everything with a listener, minus the ports that must keep conntrack
+# (SSH, WireGuard, and any DNAT/Docker-forwarded port).
 _notrack_candidates() {
   has_cmd ss || return 0
-  local ssh="$1" wg="$2" excl listeners
-  excl="$(printf '%s\n%s\n' "$ssh" "$wg" | grep -E '^[0-9]+$' | sort -un)"
+  local excl listeners
+  excl="$(printf '%s\n%s\n%s\n' "$1" "$2" "$3" | grep -E '^[0-9]+$' | sort -un)"
   listeners="$(ss -tln 2>/dev/null)" || return 0
   awk 'NR > 1 { p = $4; sub(/.*:/, "", p); if (p ~ /^[0-9]+$/) print p }' <<<"$listeners" |
-    sort -un | comm -23 - <(printf '%s\n' "$excl") | paste -sd, -
+    sort -un | _ports_subtract "$excl" | paste -sd, -
 }
 
 # _notrack_sanitize LIST — keep valid 1..65535 ports, dedup, comma-join.
@@ -3268,6 +3315,14 @@ _notrack_sanitize() {
   done
   ((${#out[@]})) || return 0
   printf '%s\n' "${out[@]}" | sort -un | paste -sd, -
+}
+
+# _notrack_drop_ports LIST DROP — LIST minus DROP (either comma- or newline-
+# separated), dedup, comma-join. Empty output is a valid result.
+_notrack_drop_ports() {
+  local drop
+  drop="$(tr ',' '\n' <<<"$2" | grep -E '^[0-9]+$' | sort -un)"
+  tr ',' '\n' <<<"$1" | grep -E '^[0-9]+$' | sort -un | _ports_subtract "$drop" | paste -sd, -
 }
 
 # _notrack_apply_live PORTS... — add the rules idempotently to IPv4 (+IPv6).
@@ -3346,18 +3401,24 @@ vpn_conntrack_bypass() {
     return 0
   fi
 
-  local ssh_port wg_ports suggested
+  local ssh_port wg_ports dnat_ports suggested
   ssh_port="$(detect_ssh_port)" || ssh_port=22
   wg_ports="$(_notrack_wireguard_ports)" || wg_ports=''
-  suggested="$(_notrack_candidates "$ssh_port" "$wg_ports")" || suggested=''
+  dnat_ports="$(_notrack_dnat_ports)" || dnat_ports=''
+  suggested="$(_notrack_candidates "$ssh_port" "$wg_ports" "$dnat_ports")" || suggested=''
 
   if [[ -n $wg_ports ]]; then
     printf '%sWireGuard detected%s on port(s) %s — excluded (NAT needs conntrack).\n' \
       "$C_KEY" "$C_RESET" "$(paste -sd, - <<<"$wg_ports")"
   fi
+  if [[ -n $dnat_ports ]]; then
+    printf '%sDocker/DNAT-forwarded port(s)%s %s — excluded: NOTRACK skips the nat\n' \
+      "$C_KEY" "$C_RESET" "$(paste -sd, - <<<"$dnat_ports")"
+    printf 'table, which would break their port forwarding.\n'
+  fi
   if [[ -z $suggested ]]; then
     printf 'No proxy data ports were detected to exempt (nothing is listening\n'
-    printf 'outside SSH/WireGuard). Nothing to do.\n'
+    printf 'outside SSH/WireGuard/Docker). Nothing to do.\n'
     return 0
   fi
   printf '%sDetected proxy port(s):%s %s\n\n' "$C_KEY" "$C_RESET" "$suggested"
@@ -3365,6 +3426,17 @@ vpn_conntrack_bypass() {
   local answer ports
   read -rp "Ports to exempt [Enter=detected, space/comma separated]: " answer || return 0
   ports="$(_notrack_sanitize "${answer:-$suggested}")" || ports=''
+  # Hard rule, even against manual input: a DNAT-forwarded port must never be
+  # NOTRACK'd (it would break forwarding), so drop any that slipped in.
+  if [[ -n $ports && -n $dnat_ports ]]; then
+    local kept
+    kept="$(_notrack_drop_ports "$ports" "$dnat_ports")"
+    if [[ $kept != "$ports" ]]; then
+      printf '%sRemoved Docker/DNAT port(s)%s from the selection — NOTRACK would break their forwarding.\n' \
+        "$C_WARN" "$C_RESET"
+      ports="$kept"
+    fi
+  fi
   if [[ -z $ports ]]; then
     printf 'No valid ports given — nothing to do.\n'
     return 0
@@ -4402,7 +4474,7 @@ _offer_service_restart() {
   for engine in docker podman; do
     has_cmd "$engine" || continue
     containers+="$("$engine" ps --format '{{.Names}} {{.Image}}' 2>/dev/null |
-      grep -iE 'marzban|pg[-_]?node|pasarguard|gozargah|x-?ui|xray|hiddify|sing-?box|hysteria|wireguard|wg-' |
+      grep -iE 'marzban|marznode|pg[-_]?node|pasarguard|gozargah|x-?ui|xray|hiddify|sing-?box|hysteria|wireguard|wg-' |
       awk -v e="$engine" '{print e "\t" $1}' || true)"
   done
 
@@ -5110,6 +5182,12 @@ main() {
       ;;
   esac
 
+  # The work is done; from here we only report and return the computed status.
+  # ST_EXIT_CODE deliberately carries 1 (a step failed) or 3 (warning/drift),
+  # so the ERR trap must be cleared first — otherwise this very `return` looks
+  # to it like an unhandled failure and prints a spurious ERROR on every run
+  # that ends in a warning (which is almost every real run).
+  trap - ERR
   log_info "${ST_NAME} finished (run ${ST_RUN_ID}, exit=${ST_EXIT_CODE})"
   return "$ST_EXIT_CODE"
 }

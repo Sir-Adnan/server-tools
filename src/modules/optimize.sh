@@ -210,7 +210,7 @@ _offer_service_restart() {
   for engine in docker podman; do
     has_cmd "$engine" || continue
     containers+="$("$engine" ps --format '{{.Names}} {{.Image}}' 2>/dev/null |
-      grep -iE 'marzban|pg[-_]?node|pasarguard|gozargah|x-?ui|xray|hiddify|sing-?box|hysteria|wireguard|wg-' |
+      grep -iE 'marzban|marznode|pg[-_]?node|pasarguard|gozargah|x-?ui|xray|hiddify|sing-?box|hysteria|wireguard|wg-' |
       awk -v e="$engine" '{print e "\t" $1}' || true)"
   done
 

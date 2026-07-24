@@ -132,6 +132,25 @@ _ss_ports_in_range() {
       }' <<<"$1" | sort -un
 }
 
+# _ports_intersect SET  / _ports_subtract SET — read candidate ports (one per
+# line) from stdin; print those that ARE (intersect) / are NOT (subtract) in
+# SET, a newline-separated list passed as the argument. These replace `comm`,
+# which needs its inputs in *byte* order while our ports are in *numeric* order
+# ("8443" sorts before "51820" numerically but after it bytewise) — feeding
+# comm numeric-sorted input yields wrong results. An empty SET is handled
+# correctly (intersect → nothing, subtract → everything).
+_ports_intersect() {
+  awk -v set="$1" '
+    BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
+    ($1 in m)'
+}
+
+_ports_subtract() {
+  awk -v set="$1" '
+    BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
+    !($1 in m)'
+}
+
 # listening_service_ports — ports of REAL services inside the ephemeral
 # range (10240-65535), one per line.
 #
@@ -148,7 +167,9 @@ listening_service_ports() {
   udp2="$(ss -uln 2>/dev/null)" || udp2=''
   {
     _ss_ports_in_range "$tcp"
-    comm -12 <(_ss_ports_in_range "$udp1") <(_ss_ports_in_range "$udp2")
+    # UDP ports present in BOTH samples — stable services, not a proxy's
+    # transient outbound sockets that show up for only one of the two probes.
+    _ss_ports_in_range "$udp2" | _ports_intersect "$(_ss_ports_in_range "$udp1")"
   } | sort -un
 }
 

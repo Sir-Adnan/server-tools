@@ -88,6 +88,11 @@ _perf_plan() {
       [[ -w $q/xps_cpus ]] && printf '%s\t%s\n' "$q/xps_cpus" "$mask"
     done
   fi
+  # Value-producing helper: never leak the exit status of a trailing loop/guard
+  # into the bare `plan="$(_perf_plan …)"` capture under errexit. On a host with
+  # a read-only /sys (unprivileged LXC) every -w test above is false and the
+  # plan is simply empty — the caller then skips the step cleanly.
+  return 0
 }
 
 # _perf_write_boot PLAN — a self-contained, idempotent boot script (each write
@@ -152,7 +157,10 @@ perf_apply() {
   local rc=0
   if [[ -d /etc/systemd/system ]] && has_cmd systemctl; then
     _perf_write_boot "$plan"
-    systemctl daemon-reload 2>>"$ST_LOG_FILE" || log_warn "daemon-reload failed."
+    if ! systemctl daemon-reload 2>>"$ST_LOG_FILE"; then
+      log_warn "systemd daemon-reload failed — the unit is written but not loaded (needs a manual reload or reboot)."
+      rc=3
+    fi
     if systemctl enable server-tools-perf.service >/dev/null 2>>"$ST_LOG_FILE"; then
       manifest_add unit server-tools-perf.service
     else
