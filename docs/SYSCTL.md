@@ -59,8 +59,7 @@ needed for the switch to fq.
 | `net.ipv4.tcp_wmem` | `4096 65536 <wmem_max>` | autotuning bounds |
 | `net.core.rmem_default` / `wmem_default` | `262144` | sane default without autotuning |
 | `net.ipv4.udp_rmem_min` / `udp_wmem_min` | `16384` | UDP floor under memory pressure (WireGuard/Hysteria2) |
-| `net.ipv4.udp_mem` | scaled to RAM | QUIC/Hysteria2 total UDP memory |
-| `net.core.optmem_max` | `65536` | per-socket ancillary buffer headroom |
+| `net.core.optmem_max` | `≥ 131072` | per-socket ancillary buffer headroom (**ceiling** — never below the kernel default, which is 131072 on modern kernels) |
 
 ### High-churn caps (L / XL only)
 
@@ -82,9 +81,9 @@ kept, so a proxy's transient outbound sockets never enter the list.
 
 | Key | Value | Why |
 | --- | --- | --- |
-| `fs.file-max` | `2097152` | sockets are files; 100k users × several fds |
-| `fs.nr_open` | `2097152` | per-process fd ceiling — raising the nofile limit is silently capped by this |
-| `vm.max_map_count` | `262144` | Xray/sing-box map many buffers per connection; the ~65k default is a scale ceiling |
+| `fs.file-max` | `≥ 2097152` | sockets are files; 100k users × several fds. **Ceiling** — a kernel/distro that already set it higher (often unlimited) is left as-is |
+| `fs.nr_open` | `≥ 2097152` | per-process fd ceiling — raising the nofile limit is silently capped by this. **Ceiling** |
+| `vm.max_map_count` | `≥ 262144` | Xray/sing-box map many buffers per connection. **Ceiling** — kernels ≥ 6.7 default to 1048576, which is never lowered |
 | `vm.swappiness` | `10` | swap is an OOM safety net, not working memory (100 on zram — see swap module) |
 | `net.ipv4.icmp_echo_ignore_broadcasts` | `1` | drop broadcast pings (smurf hardening) |
 | `net.ipv4.icmp_ignore_bogus_error_responses` | `1` | ignore malformed ICMP error replies |
@@ -143,3 +142,5 @@ users. That is also why `ethtool -G` ring resizing is excluded (below).
 | `Domains=~.` DNS routing | global DNS hijack; breaks cloud-internal resolution |
 | `tcp_mtu_probing=2` | aggressive probing shrinks MSS pathologically |
 | Disabling SACK/timestamps | outdated cargo-cult tuning; hurts modern stacks |
+| `net.ipv4.udp_mem` | the kernel already sizes the UDP pool from RAM; a fixed formula only ever caps it lower on a busy QUIC/Hysteria node |
+| Per-interface `accept_ra=2` on static links | only added where the link already accepts RAs — on a statically-addressed link networkd holds it at 0 and would revert us forever (a false "drift") |

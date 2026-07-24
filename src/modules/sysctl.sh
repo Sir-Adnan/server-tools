@@ -73,6 +73,18 @@ _sysctl_reserved_ports() {
     paste -sd, -
 }
 
+# _sysctl_ceiling KEY TARGET — emit "KEY = N" where N is the greater of the
+# running kernel value and TARGET. Modern kernels ship high defaults for these
+# capacity keys (e.g. vm.max_map_count is 1048576 since 6.7, fs.file-max is
+# effectively unlimited); a fixed value would REGRESS them. Raising is fine,
+# lowering a kernel/distro default is not.
+_sysctl_ceiling() {
+  local key="$1" target="$2" cur
+  cur="$(sysctl_get "$key")"
+  [[ $cur =~ ^[0-9]+$ ]] && ((cur > target)) && target="$cur"
+  printf '%s = %s\n' "$key" "$target"
+}
+
 _sysctl_render() {
   local buf_bytes=$((ST_BUF_MB * 1048576))
   local ram_mb ram_pages swappiness=10 fastopen=3
@@ -135,14 +147,15 @@ net.ipv4.tcp_rmem = 4096 87380 ${buf_bytes}
 net.ipv4.tcp_wmem = 4096 65536 ${buf_bytes}
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
-net.ipv4.udp_mem = $((ram_pages / 32)) $((ram_pages / 16)) $((ram_pages / 8))
-net.core.optmem_max = 65536
+# udp_mem is deliberately NOT set: the kernel already sizes it from RAM, and a
+# fixed formula only ever caps it lower on a busy UDP (QUIC/Hysteria) node.
+$(_sysctl_ceiling net.core.optmem_max 131072)
 
-# --- System capacity
-fs.file-max = 2097152
-fs.nr_open = 2097152
+# --- System capacity (ceilings — never below the running kernel's own value)
+$(_sysctl_ceiling fs.file-max 2097152)
+$(_sysctl_ceiling fs.nr_open 2097152)
 # Xray/sing-box map many buffers per connection; the ~65k default caps scale.
-vm.max_map_count = 262144
+$(_sysctl_ceiling vm.max_map_count 262144)
 vm.swappiness = ${swappiness}
 # Cheap, universally-safe ICMP hardening.
 net.ipv4.icmp_echo_ignore_broadcasts = 1
@@ -219,15 +232,23 @@ EOF
     # which silently kills the IPv6 default route on RA/SLAAC providers after
     # a reboot. Value 2 keeps accepting RAs while forwarding.
     # accept_ra is per-device, so the live interface must be named explicitly.
-    local iface
+    local iface iface_ra
     iface="$(net_default_iface)" || iface=''
     cat <<EOF
 net.ipv6.conf.all.accept_ra = 2
 net.ipv6.conf.default.accept_ra = 2
 EOF
-    # The leading "-" tells systemd-sysctl to ignore this line when the
-    # interface does not exist yet at early boot, instead of logging a error.
-    [[ -n $iface ]] && printf -- '-net.ipv6.conf.%s.accept_ra = 2\n' "$iface"
+    # Per-interface accept_ra is only pinned where the link ACTUALLY uses RA.
+    # On a statically-addressed link networkd holds accept_ra at 0 and reverts
+    # our value on every reload — a permanent false "drift" — and forcing RA
+    # acceptance there is pointless. So we set it only when the link already
+    # accepts RAs (value >= 1). The leading "-" lets systemd-sysctl ignore the
+    # line if the interface is absent at early boot.
+    if [[ -n $iface ]]; then
+      iface_ra="$(sysctl_get "net.ipv6.conf.${iface}.accept_ra")"
+      [[ $iface_ra =~ ^[1-9] ]] &&
+        printf -- '-net.ipv6.conf.%s.accept_ra = 2\n' "$iface"
+    fi
   fi
 
   # This helper's stdout is captured via `rendered="$(_sysctl_render)"`. Under

@@ -4,6 +4,32 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.3.2] — 2026-07-24
+
+### Fixed
+
+- **DNS now sticks on netplan/DHCP hosts.** On a systemd-networkd link the
+  DHCP-provided servers OUTRANK the global resolved config, and a runtime
+  `resolvectl dns` override was clobbered by networkd re-pushing the DHCP DNS
+  after the resolved restart — so a chosen provider silently never took effect
+  (the WARN some users saw). The link is now fixed first: a networkd drop-in
+  pins our servers and sets `UseDNS=false`, applied with a blip-free
+  `networkctl reload` *before* resolved restarts, then re-asserted at runtime
+  afterwards. Persist → restart → re-assert, in that order.
+- **Capacity sysctls no longer regress a modern kernel.** `vm.max_map_count`,
+  `fs.file-max`, `fs.nr_open` and `net.core.optmem_max` were fixed values that
+  on kernel 6.x are *lower* than the running defaults (e.g. `max_map_count` is
+  1048576 since 6.7, `file-max` is effectively unlimited) — so the tool was
+  quietly lowering them. They are now **ceilings**: applied only when higher
+  than the live value, never below it.
+- **`net.ipv4.udp_mem` is no longer set.** The fixed RAM formula produced values
+  *below* the kernel's own RAM-scaled default, capping UDP memory on busy
+  QUIC/Hysteria nodes. The kernel already sizes this well; we leave it alone.
+- **No more false `accept_ra` drift on static-IPv6 links.** Per-interface
+  `accept_ra=2` is now pinned only where the link actually accepts RAs; on a
+  statically-addressed link networkd holds it at 0 and reverted us on every
+  reload, showing as a permanent one-key drift in `--verify` / `--dry-run`.
+
 ## [2.3.1] — 2026-07-24
 
 ### Changed
