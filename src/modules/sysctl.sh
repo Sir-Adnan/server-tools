@@ -27,6 +27,14 @@ sysctl_detect_bbr() {
     if [[ " $(sysctl_get net.ipv4.tcp_available_congestion_control) " == *bbr* ]]; then
       ST_CC='bbr'
       ST_QDISC='fq'
+    elif ((ST_DRY_RUN)) && has_cmd modinfo && modinfo -n tcp_bbr >/dev/null 2>&1; then
+      # Dry-run must not load anything, so on a host where tcp_bbr is a module
+      # that is not loaded YET, the sysctl list above still says "no bbr" — and
+      # the plan would promise cubic while the real run (which does modprobe)
+      # delivers BBR. Inspecting the module without loading it, exactly as
+      # qdisc_supported does under dry-run, makes the preview match the outcome.
+      ST_CC='bbr'
+      ST_QDISC='fq'
     fi
   fi
 

@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.2] — 2026-07-24
+
+### Fixed
+
+- **`--dry-run` no longer predicts `cubic` on a host that will get BBR.** Dry-run
+  deliberately does not `modprobe tcp_bbr` (it must change nothing), so on a
+  host where BBR is a module that is not loaded *yet*, the kernel's
+  `tcp_available_congestion_control` still said "no bbr" and the plan promised
+  `cubic` + `fq_codel` — while the real run loaded the module and applied
+  `bbr` + `fq`. The preview now inspects the module without loading it (the same
+  approach `qdisc_supported` already used under dry-run), so the plan matches
+  the outcome. A host where BBR is genuinely unavailable still reports `cubic`.
+
 ## [2.4.1] — 2026-07-24
 
 ### Fixed

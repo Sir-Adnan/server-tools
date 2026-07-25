@@ -17,6 +17,11 @@ All values land in `/etc/sysctl.d/99-server-tools.conf` (tracked via
 | `net.ipv4.tcp_congestion_control` | `bbr` if kernel ≥ 4.9 and module loads, else `cubic` | best throughput/latency on lossy long-haul paths |
 
 BBR persistence: `tcp_bbr` in `/etc/modules-load.d/server-tools.conf`
+
+Under `--dry-run` the module is deliberately **not** loaded, so availability is
+inferred from `modinfo tcp_bbr` instead of the live
+`tcp_available_congestion_control` list — otherwise the plan would promise
+`cubic` on exactly the hosts where a real run applies `bbr`.
 (tracked, so rollback removes it — a v1 gap).
 
 ### Connection accept path (TIER-scaled)
