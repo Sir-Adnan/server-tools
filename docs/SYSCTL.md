@@ -55,8 +55,8 @@ needed for the switch to fq.
 | Key | S / M / L / XL | Why |
 | --- | --- | --- |
 | `net.core.rmem_max` / `wmem_max` | 8 / 16 / 32 / 64 MB | BDP headroom for long-haul high-bandwidth paths |
-| `net.ipv4.tcp_rmem` | `4096 87380 <rmem_max>` | autotuning bounds |
-| `net.ipv4.tcp_wmem` | `4096 65536 <wmem_max>` | autotuning bounds |
+| `net.ipv4.tcp_rmem` | `≥ 4096 87380 <rmem_max>` | autotuning bounds. **Per-field ceiling** — the middle value is the buffer each new socket starts with, and modern kernels default to `131072`; a hardcoded triple would shrink it back to the pre-4.20 `87380` |
+| `net.ipv4.tcp_wmem` | `≥ 4096 65536 <wmem_max>` | autotuning bounds. **Per-field ceiling** (same rule; also stops a small tier from lowering a large kernel max) |
 | `net.core.rmem_default` / `wmem_default` | `262144` | sane default without autotuning |
 | `net.ipv4.udp_rmem_min` / `udp_wmem_min` | `16384` | UDP floor under memory pressure (WireGuard/Hysteria2) |
 | `net.core.optmem_max` | `≥ 131072` | per-socket ancillary buffer headroom (**ceiling** — never below the kernel default, which is 131072 on modern kernels) |
@@ -76,6 +76,21 @@ entries after collapsing consecutive runs into ranges) — an outgoing
 connection can then never grab a panel/node port. TCP listeners are taken
 as-is; UDP is sampled twice a second apart and only the stable intersection is
 kept, so a proxy's transient outbound sockets never enter the list.
+
+Two properties this key does *not* share with the others:
+
+- **UDP churn is discarded wholesale.** A userspace proxy opens one unconnected
+  UDP socket per session and a QUIC/Hysteria session easily outlives the two
+  probes, so on a busy node the samples agree on dozens of ephemeral ports that
+  belong to no service. More than `ST_UDP_SERVICE_MAX` (8) UDP candidates is
+  therefore treated as session churn and dropped, with a warning; pin genuine
+  UDP service ports with the `reserved_ports` config key.
+- **Drift is judged by coverage, not equality.** This is the only key whose
+  intent is rebuilt from the live system on every render, so the set legitimately
+  differs between runs. Reserving *more* than the current render asks for is
+  harmless; only a *missing* port is a hazard, and Doctor reports that
+  separately (`_doctor_unreserved_ports`). Comparing for equality made the key
+  report drift forever on a busy node.
 
 ### System capacity
 

@@ -65,6 +65,10 @@ root inside Ubuntu 20.04/22.04/24.04 and Debian 11/12 containers. Keep it green.
   values (readability on light and dark terminals). `ui_detect_terminal`
   already honours NO_COLOR, non-tty, and TERM=dumb; don't bypass it.
 - Unicode box drawing only behind `ST_UTF8` checks, with an ASCII fallback.
+- **The global `IFS=$'\n\t'` has no space.** So `for x in ${list//,/ }` does not
+  split, `"${arr[*]}"` joins with a *newline*, and a bare `read -ra`/`read a b c`
+  never splits a space-separated line. Use `ports_split` / `join_sp`, or prefix
+  the read (`IFS=' ' read -ra …`). This class has caused silent, shipped bugs.
 - User-facing docs: Persian first (`README.md`, `docs/FAQ.md`) with an English
   mirror. Code, comments, and commit messages: English.
 

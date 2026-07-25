@@ -4,6 +4,47 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.1] — 2026-07-24
+
+### Fixed
+
+- **`tcp_rmem` no longer shrinks the kernel's own initial receive buffer.** The
+  buffer triples were hardcoded, so on a modern kernel (whose default is
+  `4096 131072 6291456`) the middle field — the buffer every NEW socket starts
+  with — was pushed back down to the pre-4.20 `87380`. Both `tcp_rmem` and
+  `tcp_wmem` are now per-field **ceilings**: each of the three values is applied
+  only when it is higher than the running kernel's, so a small tier can no
+  longer shrink a large kernel default either.
+- **Space-separated data was silently never split (six features affected).** The
+  tool runs with a hardened global `IFS=$'\n\t'` — no space — which quietly
+  broke every `for x in ${list//,/ }` and every `"${array[*]}"` join:
+  - **NOTRACK never worked at all.** `iptables` received the whole rule as ONE
+    argument (`[PREROUTING -p tcp --dport 62050]`) and the target as another
+    (`[-j CT --notrack]`), so every rule was rejected; a multi-port entry was
+    also sanitised down to nothing ("No valid ports given").
+  - **MSS clamping never survived a reboot.** Its generated `ExecStart=` was
+    joined with newlines and written across nine lines, leaving an unloadable
+    systemd unit.
+  - **Reserved-port checks were inert**, then wrong: the port expander returned
+    empty for any list, so Doctor reported every port of a multi-port reserved
+    list as unreserved.
+  - **Node-API restriction did nothing** for the default `62050,62051` — the
+    pair arrived as a single invalid "port" and was skipped.
+  - The SSH-hardening summary printed one line per setting.
+  Added two supported helpers (`ports_split`, `join_sp`) and routed every such
+  site through them.
+- **The reserved-ports key no longer drifts forever.** It is the one key whose
+  intent is rebuilt from the live system on each render, so its set legitimately
+  changes between runs and an equality test could never hold. It is now compared
+  by **coverage** — reserving more than we ask for is harmless, a missing port
+  is the real hazard, and Doctor still reports that separately.
+- **Transient proxy sockets are no longer reserved as service ports.** A
+  userspace proxy opens one unconnected UDP socket per session, and a
+  QUIC/Hysteria session outlives the two-sample probe, so 64 ephemeral ports
+  (the whole cap) were being reserved on a busy node. An implausible number of
+  UDP candidates is now recognised as session churn and dropped, with a warning
+  pointing at the `reserved_ports` config key for real UDP services.
+
 ## [2.4.0] — 2026-07-24
 
 ### Added

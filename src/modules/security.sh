@@ -180,8 +180,15 @@ security_ssh() {
     }
   done
 
-  printf '%sApplied and verified:%s %s\n' "$C_OK" "$C_RESET" "${lines[*]}"
-  log_info "SSH hardening drop-in applied and verified: ${lines[*]}"
+  # "${lines[*]}" would join with the global IFS's newline and break this into
+  # one line per setting; the entries contain spaces, so join with ", ".
+  local summary
+  summary="$(
+    IFS=', '
+    printf '%s' "${lines[*]}"
+  )"
+  printf '%sApplied and verified:%s %s\n' "$C_OK" "$C_RESET" "$summary"
+  log_info "SSH hardening drop-in applied and verified: ${summary}"
   return 0
 }
 
@@ -325,7 +332,7 @@ security_node_api() {
   ports="${ports:-62050,62051}"
 
   local rc=0
-  for port in ${ports//,/ }; do
+  while IFS= read -r port; do
     [[ $port =~ ^[0-9]+$ ]] || {
       log_warn "Skipped invalid port '${port}'."
       continue
@@ -337,7 +344,7 @@ security_node_api() {
       log_warn "Could not restrict port ${port}."
       rc=3
     fi
-  done
+  done < <(ports_split "$ports")
   log_info "Node API ports restricted to ${panel_ip} (rc=${rc})."
   return "$rc"
 }

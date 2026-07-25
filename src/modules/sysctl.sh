@@ -73,6 +73,28 @@ _sysctl_reserved_ports() {
     paste -sd, -
 }
 
+# _sysctl_triple_ceiling KEY MIN DEFAULT MAX — the ceiling rule for the
+# three-field memory keys (tcp_rmem/tcp_wmem): emit each field as the greater
+# of ours and the running kernel's. The middle field is the *initial* buffer a
+# new socket gets, and modern kernels raised their own default (tcp_rmem is
+# "4096 131072 6291456" on 6.x); a hardcoded triple silently shrank it back to
+# the pre-4.20 87380, i.e. a smaller initial receive window on every new
+# connection. Raising is tuning; lowering a kernel default is a regression.
+_sysctl_triple_ceiling() {
+  local key="$1" cur i
+  local -a want=("$2" "$3" "$4") live=()
+  cur="$(sysctl_get "$key")"
+  # sysctl prints these tab-separated; accept any run of whitespace.
+  if [[ $cur =~ ^[0-9]+[[:space:]]+[0-9]+[[:space:]]+[0-9]+$ ]]; then
+    # The global IFS ($'\n\t') has no space, so it must be set explicitly here.
+    IFS=$' \t' read -ra live <<<"$cur"
+    for i in 0 1 2; do
+      if ((live[i] > want[i])); then want[i]="${live[i]}"; fi
+    done
+  fi
+  printf '%s = %s %s %s\n' "$key" "${want[0]}" "${want[1]}" "${want[2]}"
+}
+
 # _sysctl_ceiling KEY TARGET — emit "KEY = N" where N is the greater of the
 # running kernel value and TARGET. Modern kernels ship high defaults for these
 # capacity keys (e.g. vm.max_map_count is 1048576 since 6.7, fs.file-max is
@@ -143,8 +165,8 @@ net.core.rmem_max = ${buf_bytes}
 net.core.wmem_max = ${buf_bytes}
 net.core.rmem_default = 262144
 net.core.wmem_default = 262144
-net.ipv4.tcp_rmem = 4096 87380 ${buf_bytes}
-net.ipv4.tcp_wmem = 4096 65536 ${buf_bytes}
+$(_sysctl_triple_ceiling net.ipv4.tcp_rmem 4096 87380 "${buf_bytes}")
+$(_sysctl_triple_ceiling net.ipv4.tcp_wmem 4096 65536 "${buf_bytes}")
 net.ipv4.udp_rmem_min = 16384
 net.ipv4.udp_wmem_min = 16384
 # udp_mem is deliberately NOT set: the kernel already sizes it from RAM, and a
@@ -265,7 +287,7 @@ EOF
 _ports_expand() {
   local item low high
   {
-    for item in ${1//,/ }; do
+    while IFS= read -r item; do
       if [[ $item == *-* ]]; then
         low="${item%%-*}"
         high="${item##*-}"
@@ -277,15 +299,32 @@ _ports_expand() {
       elif [[ $item =~ ^[0-9]+$ ]]; then
         printf '%s\n' "$item"
       fi
-    done
+    done < <(ports_split "$1")
   } | sort -un | paste -sd' ' -
+}
+
+# _ports_covered WANTED HAVE — 0 when every port in WANTED is also in HAVE
+# (both in "80,1000-1002" form). Coverage, not equality.
+_ports_covered() {
+  local wanted have missing
+  wanted="$(_ports_expand "$1" | tr ' ' '\n')"
+  have="$(_ports_expand "$2" | tr ' ' '\n')"
+  [[ -n $wanted ]] || return 0
+  missing="$(_ports_subtract "$have" <<<"$wanted")"
+  [[ -z $missing ]]
 }
 
 # _sysctl_values_match KEY ACTUAL EXPECTED
 _sysctl_values_match() {
   case "$1" in
     net.ipv4.ip_local_reserved_ports)
-      [[ "$(_ports_expand "$2")" == "$(_ports_expand "$3")" ]]
+      # Coverage, not equality: this is the one key whose intent is rebuilt from
+      # the live system on every render, so the set legitimately differs between
+      # runs (a service stopped, a session port vanished). Reserving MORE than
+      # we ask for is harmless — a missing port is the actual hazard, and Doctor
+      # reports that separately via _doctor_unreserved_ports. Comparing for
+      # equality made this key report drift forever on a busy node.
+      _ports_covered "$3" "$2"
       ;;
     *)
       # Normalise whitespace runs so multi-value keys compare fairly.

@@ -144,14 +144,15 @@ _doctor_unreserved_ports() {
 # _port_in_reserved_list PORT LIST — LIST holds numbers and "a-b" ranges.
 _port_in_reserved_list() {
   local port="$1" item low high
-  for item in ${2//,/ }; do
+  while IFS= read -r item; do
     if [[ $item == *-* ]]; then
       low="${item%%-*}"
       high="${item##*-}"
-      ((port >= low && port <= high)) && return 0
+      [[ $low =~ ^[0-9]+$ && $high =~ ^[0-9]+$ ]] || continue
+      if ((port >= low && port <= high)); then return 0; fi
     elif [[ $item == "$port" ]]; then
       return 0
     fi
-  done
+  done < <(ports_split "$2")
   return 1
 }

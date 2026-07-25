@@ -139,6 +139,29 @@ _ss_ports_in_range() {
 # ("8443" sorts before "51820" numerically but after it bytewise) — feeding
 # comm numeric-sorted input yields wrong results. An empty SET is handled
 # correctly (intersect → nothing, subtract → everything).
+# The tool runs with a hardened global IFS ($'\n\t' — deliberately no space).
+# That makes two everyday bash idioms silently WRONG on space-separated data:
+#   for x in ${list//,/ }  -> no split at all; the whole list arrives as one word
+#   "${array[*]}"          -> joined with a NEWLINE instead of a space
+# Both failed silently in real features (a port list became one bogus "port";
+# a generated systemd ExecStart line was split across nine lines). These two
+# helpers are the supported way to do each, and must be used instead.
+
+# ports_split LIST — one token per line from a "80,443 1000-1002" list.
+ports_split() {
+  local -a items=()
+  [[ -n ${1:-} ]] || return 0
+  IFS=$', \t' read -ra items <<<"$1"
+  ((${#items[@]} > 0)) && printf '%s\n' "${items[@]}"
+  return 0
+}
+
+# join_sp WORD... — the words joined by single spaces (for argv-shaped strings).
+join_sp() {
+  local IFS=' '
+  printf '%s' "$*"
+}
+
 _ports_intersect() {
   awk -v set="$1" '
     BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
@@ -151,6 +174,15 @@ _ports_subtract() {
     !($1 in m)'
 }
 
+# A userspace proxy (Xray/sing-box) opens one unconnected UDP socket per UDP
+# session, and a QUIC/Hysteria session lives for minutes — long enough to
+# survive the two samples below and look exactly like a service. A real host
+# runs a handful of UDP services, never dozens, so an implausible count is
+# session churn: it gets dropped wholesale instead of reserving ephemeral ports
+# that belong to nothing. (Reserving them wasted the list on transient ports
+# and made the reserved key mismatch on every later run.)
+readonly ST_UDP_SERVICE_MAX=8
+
 # listening_service_ports — ports of REAL services inside the ephemeral
 # range (10240-65535), one per line.
 #
@@ -160,16 +192,27 @@ _ports_subtract() {
 # every second — pushing genuine ports (a node API port, WireGuard) out.
 listening_service_ports() {
   has_cmd ss || return 0
-  local tcp udp1 udp2
+  local tcp udp1 udp2 udp_stable udp_count
   tcp="$(ss -tln 2>/dev/null)" || tcp=''
   udp1="$(ss -uln 2>/dev/null)" || udp1=''
   sleep 1
   udp2="$(ss -uln 2>/dev/null)" || udp2=''
+
+  # UDP ports present in BOTH samples — stable services, not a proxy's
+  # transient outbound sockets that show up for only one of the two probes.
+  udp_stable="$(_ss_ports_in_range "$udp2" | _ports_intersect "$(_ss_ports_in_range "$udp1")")"
+  udp_count="$(awk 'NF' <<<"$udp_stable" | wc -l | tr -d '[:space:]')"
+  if ((udp_count > ST_UDP_SERVICE_MAX)); then
+    # Warn (stderr), never print here: this function's stdout IS the port list.
+    log_warn "${udp_count} UDP ports look like proxy sessions rather than services — not reserving them. Pin real UDP service ports with the 'reserved_ports' config key."
+    udp_stable=''
+  fi
+
   {
     _ss_ports_in_range "$tcp"
-    # UDP ports present in BOTH samples — stable services, not a proxy's
-    # transient outbound sockets that show up for only one of the two probes.
-    _ss_ports_in_range "$udp2" | _ports_intersect "$(_ss_ports_in_range "$udp1")"
+    # An `if` (not `&&`) so an empty UDP set cannot make the group return 1 and,
+    # under pipefail, blank a perfectly good TCP list in the caller's `|| x=''`.
+    if [[ -n $udp_stable ]]; then printf '%s\n' "$udp_stable"; fi
   } | sort -un
 }
 
