@@ -121,15 +121,34 @@ qdisc_supported() {
   return 0
 }
 
-# _ss_ports_in_range SS_OUTPUT — local ports inside the ephemeral range.
+# _ss_listen_ports SS_OUTPUT — ports of listeners reachable from OFF the box,
+# one per line.
+#
+# Loopback-bound listeners are deliberately excluded, and that single rule is
+# what separates a configured service port from a random internal one. Xray
+# keeps internal plumbing on 127.0.0.1 with a port the kernel picks afresh on
+# every start (127.0.0.1:39036 one run, 127.0.0.1:57035 after a restart), while
+# every port that actually serves clients is bound to a wildcard or a real
+# address and comes back unchanged. Reserving a random loopback port is
+# meaningless — nothing outside can reach it and the app asked for "any free
+# port" in the first place — and it made the generated value differ on every run.
+_ss_listen_ports() {
+  awk 'NR > 1 {
+        addr = $4
+        port = addr
+        sub(/.*:/, "", port)
+        sub(/:[^:]*$/, "", addr) # strip ":port", leaving the local address
+        gsub(/[][]/, "", addr)   # drop IPv6 brackets
+        if (addr ~ /^127\./ || addr == "::1" || addr ~ /^::ffff:127\./ || addr ~ /%lo$/) next
+        if (port ~ /^[0-9]+$/) print port
+      }' <<<"$1" | sort -un
+}
+
+# _ss_ports_in_range SS_OUTPUT — as above, restricted to the ephemeral range.
 # The "+ 0" is not decoration: sub() turns the field into a string, and a
 # string comparison would rank "22" above "10240" and let it through.
 _ss_ports_in_range() {
-  awk 'NR > 1 {
-        p = $4
-        sub(/.*:/, "", p)
-        if (p ~ /^[0-9]+$/ && p + 0 >= 10240 && p + 0 <= 65535) print p
-      }' <<<"$1" | sort -un
+  _ss_listen_ports "$1" | awk '$1 + 0 >= 10240 && $1 + 0 <= 65535'
 }
 
 # The tool runs with a hardened global IFS ($'\n\t' — deliberately no space).

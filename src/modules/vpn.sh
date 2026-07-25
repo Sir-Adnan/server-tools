@@ -189,8 +189,9 @@ _notrack_candidates() {
   local excl listeners
   excl="$(printf '%s\n%s\n%s\n' "$1" "$2" "$3" | grep -E '^[0-9]+$' | sort -un)"
   listeners="$(ss -tln 2>/dev/null)" || return 0
-  awk 'NR > 1 { p = $4; sub(/.*:/, "", p); if (p ~ /^[0-9]+$/) print p }' <<<"$listeners" |
-    sort -un | _ports_subtract "$excl" | paste -sd, -
+  # Same reachability rule as the reserved-ports logic: a loopback-only listener
+  # is internal plumbing, so exempting it from conntrack would buy nothing.
+  _ss_listen_ports "$listeners" | _ports_subtract "$excl" | paste -sd, -
 }
 
 # _notrack_sanitize LIST — keep valid 1..65535 ports, dedup, comma-join.

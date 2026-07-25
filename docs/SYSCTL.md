@@ -82,7 +82,12 @@ grab a panel/node port.
 
 Only **unambiguous** evidence is used, in this order:
 
-1. **TCP sockets in LISTEN state** — a listener is a service by definition.
+1. **TCP sockets in LISTEN state, bound to an address reachable from off the
+   box** (wildcard or a real address). Loopback-only listeners are excluded:
+   Xray keeps internal plumbing on `127.0.0.1` with a port the kernel assigns
+   afresh at every start, so reserving it is meaningless *and* would change the
+   generated value on every run — whereas a port that serves clients must be
+   externally bound and survives a restart unchanged.
 2. **WireGuard's listen port**, asked of `wg` itself rather than inferred from
    sockets.
 3. The **`reserved_ports` config key** (comma separated), for anything else.

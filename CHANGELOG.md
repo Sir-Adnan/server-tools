@@ -4,6 +4,23 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.4] — 2026-07-24
+
+### Fixed
+
+- **Loopback-only listeners are no longer treated as service ports.** With UDP
+  detection gone (2.4.3), the reserved-port list still changed on every run, and
+  the remaining source turned out to be TCP: Xray keeps internal plumbing on
+  `127.0.0.1` with a port the kernel assigns afresh at every start
+  (`127.0.0.1:39036` one run, `127.0.0.1:57035` after a restart), while every
+  port that actually serves clients (`*:11000`, `*:43582`, `*:62050`, …) is
+  bound to a wildcard or a real address and returns unchanged across a restart.
+  Detection now keeps only listeners reachable from off the box, which makes the
+  rendered value identical run after run. Reserving a random loopback port was
+  meaningless anyway — nothing outside can reach it, and the app asked the
+  kernel for "any free port" to begin with. The same reachability rule now
+  applies to NOTRACK candidates, where exempting a loopback port bought nothing.
+
 ## [2.4.3] — 2026-07-24
 
 ### Fixed
