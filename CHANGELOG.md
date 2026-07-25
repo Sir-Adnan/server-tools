@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.4.3] — 2026-07-24
+
+### Fixed
+
+- **Reserved service ports are now deterministic, ending the last drift.** The
+  auto-detected set is rebuilt from the live system on every render, and it
+  included generic UDP listeners — but a userspace proxy opens one UNCONN socket
+  per UDP session, and a QUIC/Hysteria session outlives any affordable sampling
+  window, so those ephemeral ports were indistinguishable from a service. Every
+  run therefore produced a *different* list (`…21837,…,49859` one run,
+  `…17456,…,48561` the next) and `--dry-run` reported one key changing forever;
+  2.4.1's coverage comparison could not absorb it, because each side held ports
+  the other lacked. Detection now uses only unambiguous evidence — **TCP LISTEN
+  sockets**, **WireGuard's own listen port** (asked of `wg`), and the explicit
+  `reserved_ports` config key — which makes the rendered value identical on
+  every run. A UDP-only service on a fixed port is pinned with `reserved_ports`.
+  The two-sample UDP probe (and its one-second `sleep`, paid on every render and
+  every Doctor run) is gone with it.
+
 ## [2.4.2] — 2026-07-24
 
 ### Fixed

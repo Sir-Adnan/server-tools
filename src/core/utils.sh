@@ -132,13 +132,6 @@ _ss_ports_in_range() {
       }' <<<"$1" | sort -un
 }
 
-# _ports_intersect SET  / _ports_subtract SET — read candidate ports (one per
-# line) from stdin; print those that ARE (intersect) / are NOT (subtract) in
-# SET, a newline-separated list passed as the argument. These replace `comm`,
-# which needs its inputs in *byte* order while our ports are in *numeric* order
-# ("8443" sorts before "51820" numerically but after it bytewise) — feeding
-# comm numeric-sorted input yields wrong results. An empty SET is handled
-# correctly (intersect → nothing, subtract → everything).
 # The tool runs with a hardened global IFS ($'\n\t' — deliberately no space).
 # That makes two everyday bash idioms silently WRONG on space-separated data:
 #   for x in ${list//,/ }  -> no split at all; the whole list arrives as one word
@@ -162,57 +155,56 @@ join_sp() {
   printf '%s' "$*"
 }
 
-_ports_intersect() {
-  awk -v set="$1" '
-    BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
-    ($1 in m)'
-}
-
+# _ports_subtract SET — read candidate ports (one per line) from stdin and
+# print those NOT in SET (a newline-separated list passed as the argument).
+# This replaces `comm`, which needs its input in *byte* order while our ports
+# are in *numeric* order ("8443" sorts before "51820" numerically but after it
+# bytewise), so comm silently returned wrong results. An empty SET is handled
+# correctly (everything passes through).
 _ports_subtract() {
   awk -v set="$1" '
     BEGIN { n = split(set, a, "\n"); for (i = 1; i <= n; i++) if (a[i] != "") m[a[i]] = 1 }
     !($1 in m)'
 }
 
-# A userspace proxy (Xray/sing-box) opens one unconnected UDP socket per UDP
-# session, and a QUIC/Hysteria session lives for minutes — long enough to
-# survive the two samples below and look exactly like a service. A real host
-# runs a handful of UDP services, never dozens, so an implausible count is
-# session churn: it gets dropped wholesale instead of reserving ephemeral ports
-# that belong to nothing. (Reserving them wasted the list on transient ports
-# and made the reserved key mismatch on every later run.)
-readonly ST_UDP_SERVICE_MAX=8
+# wg_listen_ports — the ports WireGuard is configured to listen on, asked of
+# wg itself (one per line). Authoritative, unlike inspecting sockets.
+wg_listen_ports() {
+  has_cmd wg || return 0
+  local out
+  out="$(wg show all listen-port 2>/dev/null)" || return 0
+  awk 'NF {print $NF}' <<<"$out" | grep -E '^[0-9]+$' | sort -un
+}
 
-# listening_service_ports — ports of REAL services inside the ephemeral
-# range (10240-65535), one per line.
+# listening_service_ports — ports of REAL services inside the ephemeral range
+# (10240-65535), one per line. Only unambiguous evidence counts:
 #
-# TCP listeners are stable by definition. UDP is sampled twice a second
-# apart and intersected: a proxy's short-lived outbound sockets also appear
-# as UNCONN, and reserving those would fill the list with noise that changes
-# every second — pushing genuine ports (a node API port, WireGuard) out.
+#   - TCP sockets in LISTEN state — a listener IS a service, by definition;
+#   - WireGuard's configured listen port, read from `wg` itself.
+#
+# Generic UDP listeners are deliberately NOT auto-detected. A userspace proxy
+# (Xray/sing-box) opens one UNCONN socket per UDP session, and a QUIC/Hysteria
+# session outlives any sampling window we could afford — so by socket inspection
+# alone those ephemeral ports are indistinguishable from a service. Reserving
+# them spent the list on ports that belong to nothing AND, because the set is
+# rebuilt from the live system on every render, made the rendered value differ
+# on every single run. Sampling twice and capping the count only reduced how
+# often that happened; it could not fix it, because the input is genuinely
+# ambiguous. A UDP-only service on a fixed port is pinned explicitly with the
+# `reserved_ports` config key instead — deterministic by construction.
 listening_service_ports() {
-  has_cmd ss || return 0
-  local tcp udp1 udp2 udp_stable udp_count
-  tcp="$(ss -tln 2>/dev/null)" || tcp=''
-  udp1="$(ss -uln 2>/dev/null)" || udp1=''
-  sleep 1
-  udp2="$(ss -uln 2>/dev/null)" || udp2=''
-
-  # UDP ports present in BOTH samples — stable services, not a proxy's
-  # transient outbound sockets that show up for only one of the two probes.
-  udp_stable="$(_ss_ports_in_range "$udp2" | _ports_intersect "$(_ss_ports_in_range "$udp1")")"
-  udp_count="$(awk 'NF' <<<"$udp_stable" | wc -l | tr -d '[:space:]')"
-  if ((udp_count > ST_UDP_SERVICE_MAX)); then
-    # Warn (stderr), never print here: this function's stdout IS the port list.
-    log_warn "${udp_count} UDP ports look like proxy sessions rather than services — not reserving them. Pin real UDP service ports with the 'reserved_ports' config key."
-    udp_stable=''
-  fi
-
+  local tcp wg_ports
   {
-    _ss_ports_in_range "$tcp"
-    # An `if` (not `&&`) so an empty UDP set cannot make the group return 1 and,
-    # under pipefail, blank a perfectly good TCP list in the caller's `|| x=''`.
-    if [[ -n $udp_stable ]]; then printf '%s\n' "$udp_stable"; fi
+    if has_cmd ss; then
+      tcp="$(ss -tln 2>/dev/null)" || tcp=''
+      _ss_ports_in_range "$tcp"
+    fi
+    wg_ports="$(wg_listen_ports)" || wg_ports=''
+    # Only ports inside the ephemeral range can ever be stolen by an outgoing
+    # connection; reserving anything outside it would be noise.
+    if [[ -n $wg_ports ]]; then
+      awk '$1 + 0 >= 10240 && $1 + 0 <= 65535' <<<"$wg_ports"
+    fi
   } | sort -un
 }
 

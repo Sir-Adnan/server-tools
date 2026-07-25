@@ -165,15 +165,6 @@ _notrack_specs() {
   done
 }
 
-# _notrack_wireguard_ports — ports WireGuard listens on (newline separated).
-# These must keep conntrack: WireGuard relies on NAT for client routing.
-_notrack_wireguard_ports() {
-  has_cmd wg || return 0
-  local out
-  out="$(wg show all listen-port 2>/dev/null)" || return 0
-  awk 'NF {print $NF}' <<<"$out" | grep -E '^[0-9]+$' | sort -un
-}
-
 # _notrack_dnat_ports — host ports that a DNAT/REDIRECT rule forwards (Docker
 # `-p`, manual port-forwards). NOTRACK skips the nat table, so exempting one of
 # these silently breaks its forwarding — fatal with docker userland-proxy off.
@@ -303,7 +294,8 @@ vpn_conntrack_bypass() {
 
   local ssh_port wg_ports dnat_ports suggested
   ssh_port="$(detect_ssh_port)" || ssh_port=22
-  wg_ports="$(_notrack_wireguard_ports)" || wg_ports=''
+  # WireGuard must keep conntrack: it relies on NAT for client routing.
+  wg_ports="$(wg_listen_ports)" || wg_ports=''
   dnat_ports="$(_notrack_dnat_ports)" || dnat_ports=''
   suggested="$(_notrack_candidates "$ssh_port" "$wg_ports" "$dnat_ports")" || suggested=''
 

@@ -75,21 +75,31 @@ needed for the switch to fq.
 
 ### Reserved service ports (dynamic)
 
-`net.ipv4.ip_local_reserved_ports` is generated at apply time from the
-listening ports that fall inside our ephemeral range (10240-65535, up to 64
-entries after collapsing consecutive runs into ranges) — an outgoing
-connection can then never grab a panel/node port. TCP listeners are taken
-as-is; UDP is sampled twice a second apart and only the stable intersection is
-kept, so a proxy's transient outbound sockets never enter the list.
+`net.ipv4.ip_local_reserved_ports` is generated at apply time from the service
+ports that fall inside our ephemeral range (10240-65535, up to 64 entries after
+collapsing consecutive runs into ranges) — an outgoing connection can then never
+grab a panel/node port.
 
-Two properties this key does *not* share with the others:
+Only **unambiguous** evidence is used, in this order:
 
-- **UDP churn is discarded wholesale.** A userspace proxy opens one unconnected
-  UDP socket per session and a QUIC/Hysteria session easily outlives the two
-  probes, so on a busy node the samples agree on dozens of ephemeral ports that
-  belong to no service. More than `ST_UDP_SERVICE_MAX` (8) UDP candidates is
-  therefore treated as session churn and dropped, with a warning; pin genuine
-  UDP service ports with the `reserved_ports` config key.
+1. **TCP sockets in LISTEN state** — a listener is a service by definition.
+2. **WireGuard's listen port**, asked of `wg` itself rather than inferred from
+   sockets.
+3. The **`reserved_ports` config key** (comma separated), for anything else.
+
+Generic UDP listeners are deliberately **not** auto-detected. A userspace proxy
+opens one UNCONN socket per UDP session and a QUIC/Hysteria session outlives any
+affordable sampling window, so by socket inspection alone those ephemeral ports
+are indistinguishable from a service. Reserving them spent the list on ports
+belonging to nothing and — because this set is rebuilt from the live system on
+every render — made the rendered value differ on every run. Sampling twice and
+capping the count only reduced how often that happened; it could not fix it,
+because the input is genuinely ambiguous. Restricting the sources above makes
+the result **deterministic by construction**; a UDP-only service on a fixed port
+is pinned with `reserved_ports`.
+
+One more property this key does *not* share with the others:
+
 - **Drift is judged by coverage, not equality.** This is the only key whose
   intent is rebuilt from the live system on every render, so the set legitimately
   differs between runs. Reserving *more* than the current render asks for is
